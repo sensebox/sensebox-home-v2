@@ -86,22 +86,16 @@ Notes:
 
 `L` is the level: `E` error, `W` warning, `I` info, `D` debug. Debug lines only appear in the dev build (`mcu_s2_dev`).
 
-### Safe mode
-
-If the box crashes (panic, watchdog, brownout) more than 5 times in a row without running normally for 10 minutes, it starts in **safe mode**. Sensors and LoRaWAN stay off and only the console runs, so a broken config can't keep the box in a reboot loop. The LED alternates red and purple, and `status` shows `SAFE MODE`.
-
-To leave it: fix the cause (e.g. with `config-set`), then `reboot`. Power-cycling the box also ends safe mode.
-
 ### Status LED
 
 | LED | Meaning |
 |---|---|
-| blue | starting |
-| short green flash every 5 s | everything OK |
-| orange flash every 2 s | degraded: something needs attention (e.g. not joined yet, a window without valid values) |
-| red flash every second | error: a component failed (e.g. a sensor) |
-| purple | service mode requested (BOOT held ≥ 3 s); the web UI isn't implemented yet |
-| alternating red/purple | safe mode |
+| 🔵 - blue | starting |
+| 🟢 - short green flash every 5 s | everything OK |
+| 🟠 - orange flash every 2 s | degraded: something needs attention (e.g. not joined yet, a window without valid values) |
+| 🔴 - red flash every second | error: a component failed (e.g. a sensor) |
+| 🟣 - purple | service mode requested (BOOT held ≥ 3 s); the web UI isn't implemented yet |
+| 🔴🟣 - alternating red/purple | If the box crashes (panic, watchdog, brownout) more than 5 times in a row without running normally for 10 minutes, it starts in **safe mode**. Sensors and LoRaWAN stay off and only the console runs, so a broken config can't keep the box in a reboot loop. |
 
 ---
 
