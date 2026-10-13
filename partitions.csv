@@ -1,0 +1,9 @@
+# senseBox:home v2 partition table, 4 MB flash.
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+factory_id, data, nvs,      0x10000,  0x3000,
+app0,       app,  ota_0,    0x20000,  0x1C0000,
+app1,       app,  ota_1,    0x1E0000, 0x1C0000,
+coredump,   data, coredump, 0x3A0000, 0x10000,
+spiffs,     data, spiffs,   0x3B0000, 0x50000,

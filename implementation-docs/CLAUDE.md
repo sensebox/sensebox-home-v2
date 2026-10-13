@@ -10,12 +10,18 @@ PlatformIO firmware for the senseBox:home v2 (senseBox MCU S2, ESP32-S2). It is 
 
 ## Commands
 PlatformIO isn't on PATH; use `~/.platformio/penv/bin/pio`.
-- Build: `pio run -e mcu_s2`
-- Native unit tests: `pio test -e native`
-- Flash + monitor: `pio run -e mcu_s2 -t upload && pio device monitor`
-- On-device tests: `pio test -e mcu_s2_test`
+- Build: `pio run -e mcu_s2` (release) or `pio run -e mcu_s2_dev` (debug logs, uses `config/olpe-template.json` when NVS has no config)
+- Native unit tests: `pio test -e native` (all pure logic; must stay green)
+- Flash + monitor: `pio run -e mcu_s2_dev -t upload && pio device monitor`
+- Serial console on the device: type `help` (status, config, config-set, appkey, log, reboot)
 
-(The envs are created in phase 0. Update this section if names change.)
+## Code layout
+- `src/` composition root only (`main.cpp`) plus the serial console.
+- `lib/<module>/src/`: `core` (data model, logger, clock), `config`, `health`, `sensors` (interface + manager),
+  `pipeline` (quality, calibration, aggregation), `uplinks` (Cayenne, airtime, uplink logic): all host-testable.
+  Device-only: `board`, `drivers`, `system` (NVS, reset info, watchdog), `lorawan` (LMIC); these are in `lib_ignore` of the `native` env.
+- `variants/sensebox_home_v2/`: own board variant (see gotchas).
+- `test/native/test_*`: Unity tests, one folder per area.
 
 ## Architecture rules (non-negotiable)
 - **Module boundaries:** modules live in `lib/<module>/`. Sensor code knows nothing about uplinks, storage or transport. Uplinks see only `Measurement`s, never concrete sensors. Concrete classes are wired together only in `src/main.cpp` and the driver registry.
@@ -40,7 +46,10 @@ When adding a feature, check it against these five questions:
 - **LoRa-Bee in XB1:** CS 34, RESET 38, power 41. DIO0 and DIO1 are **both on INT 33** (same as the v1 LMIC pin map).
 - **SD card** has its own SPI bus (CS 10, MOSI 11, SCK 12, MISO 13) and a power switch on pin 9.
 - **Service mode is the BOOT button (GPIO0), pressed ≥ 3 s while running.** GPIO0 is a strapping pin: held during reset, it enters download mode. Input with pull-up only, never drive it.
-- **`IO_ENABLE` (8) is not used for now.**
+- **`IO_ENABLE` (8) is not managed by the firmware;** the board variant switches it on at boot.
+- **Own board variant** (`variants/sensebox_home_v2`): the stock `sensebox_mcu_esp32s2` variant blocks 5 s at every boot and switches to `ota_1` if BOOT is pressed then. That would break our OTA/rollback, so we use a copy without it. Don't switch back to the stock variant.
+- **Adafruit AHTX0 busy-waits without a bound** in `getEvent()`/`begin()` (a failed status read looks like "busy" forever). The driver checks the sensor answers first; a hang there ends in a task-watchdog reset.
+- **Bootloader:** app rollback is enabled in the framework's bootloader (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`), task WDT 5 s, core dump to flash.
 - **Cayenne/openSenseMap:** the openSenseMap reads TTN's decoded payload (the TTN formatter must be set to CayenneLPP) and stamps values with the gateway receive time. So there is no LoRa backlog catch-up. A missing channel is stored as 0 on the openSenseMap (accepted for now). PM is sent as `analog_in`, clamped at 327.67.
 
 ## Code style

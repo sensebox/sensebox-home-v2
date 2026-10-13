@@ -46,6 +46,24 @@ The plan sorts the work into an **Olpe MVP** (everything in phases 0–7) and **
 | Missing channel → 0 on OSeM | **accepted for now** | known limitation; integration fix moves to phase 8 |
 | LoRaWAN library | **MCCI LMIC** | rejoin after every boot, dedicated LMIC task (§6.0) |
 
+### 1.2 Implementation status (2026-10-13)
+
+Done (builds for the MCU S2; 46 native unit tests pass; **not yet run on hardware**):
+- Phase 0 (except hardware checks): PlatformIO project, partition table, own board variant, native test env.
+- Phase 1: data model, logger with RAM ring, clock (UTC + unsynced timestamps), config (structs, JSON, validation, migration framework, NVS), health registry, boot guard / safe mode, reset reason + breadcrumb, task watchdog, status LED, BOOT button detection.
+- Phase 2: sensor interface, SensorManager (interval, timeouts, backoff, health), AM2315C (Adafruit AHTX0) and SPS30 drivers, quality checks, calibration, aggregation.
+- Phase 4 (most of it): Cayenne encoder, airtime + fair-use budget, Cayenne uplink (10-min means, no catch-up), LMIC transport in its own task (join, uplink, DeviceTimeReq → clock, radio reset).
+- Serial console for dev/provisioning (status, config, AppKey).
+- HDC1080 driver (Adafruit HDC1000 library) for bench testing and existing boxes.
+
+Not done yet: phase 3 (SD storage, janitor), phase 5 (service mode / web UI), phase 6 (OTA), phase 7, `tools/` scripts, on-device tests.
+
+Findings during implementation:
+- The stock `sensebox_mcu_esp32s2` board variant blocks 5 s at boot and switches the boot partition to `ota_1` if BOOT is pressed. With our partition table that would bypass OTA rollback, so the firmware uses its own variant (`variants/sensebox_home_v2`) without it.
+- The framework bootloader has app rollback enabled → phase 0 question answered. Flash 4 MB, PSRAM present.
+- Adafruit AHTX0's `getEvent()` / `begin()` busy-wait without an upper bound. Mitigated by a presence check before each measurement; a sensor vanishing mid-measurement still ends in a watchdog reset.
+- SF12 airtime for the 23 B frame is ~2.0 s (the first draft said ~1.5 s).
+
 ---
 
 ## 2. Lessons from the existing code
@@ -318,7 +336,7 @@ Several uplinks can be active at once (e.g. LoRa + WiFi in the future). Each has
   - A supervisor checks that sensor/uplink loops make progress (heartbeat).
   - The reset reason (`esp_reset_reason()`) plus a "breadcrumb" (last module/state, kept in `RTC_NOINIT` memory) are written to NVS on the next boot.
   - The core dump partition is included in the diagnostic report.
-  - **Crash-loop protection:** if the box boots more than N times without reaching the "healthy for 10 min" mark, it starts in **safe mode**: no sensors/uplinks, only service mode/web UI, so it can still be repaired over the air.
+  - **Crash-loop protection:** if the box crashes (panic, watchdog or brownout reset) more than 5 times in a row without reaching the "healthy for 10 min" mark, it starts in **safe mode**: no sensors/uplinks, only service mode/web UI, so it can still be repaired over the air. A normal start (power-on, flashing, a requested reboot) never counts and ends safe mode.
 - **Board layer:** see §4.7.1. It provides one shared `I2CBus` object with a mutex, per-transaction timeout and bus recovery. The SPS30 needs ≤100 kHz, so the whole bus runs at 100 kHz.
 - **Device identity (`factory_id` NVS partition):** serial number, hardware version, production batch, production date and calibration profile. These are written once at production by a provisioning script (`tools/provision.py`). This covers "issues f)" for now. If an EEPROM on the board/sensor appears later, a second identity source can be added.
 
@@ -476,7 +494,7 @@ TTN Fair Use allows about **30 s of airtime per device per day**. A 23 B payload
 | SF7 | ~80 ms | ~370 | ~4 min |
 | SF8 | ~145 ms | ~200 | ~7 min |
 | SF9 | ~270 ms | ~110 | ~13 min |
-| SF12 | ~1.5 s | ~20 | ~72 min |
+| SF12 | ~2.0 s | ~15 | ~96 min |
 
 → **Measure locally every 60 s and send aggregated means every 10 min by default**, with ADR enabled. The 10 min interval fits the budget up to **SF8**. Boxes that only reach a gateway at SF9 or higher will send less often (about every 13 min at SF9). Checking gateway coverage at the Olpe sites (e.g. TTN Mapper, or a test box) before installation is therefore worthwhile. The uplink interval is configurable. `LoRaWanLink` tracks its own airtime budget and stretches the interval automatically when the SF is high. All raw 60 s values stay on the SD card (if present).
 
@@ -734,7 +752,7 @@ Every phase ends with something running on real hardware. Phases 0–7 make up t
 8. Metadata model sync with openSenseMap / openSenseLab (SOSA/SSN)
 9. Battery / low-power mode (deep sleep, duty-cycled SPS30), together with the BMS hardware
 10. 30-day soak test as a standing release gate
-11. SHT4x and HDC1080 drivers (existing boxes) and `tools/sd_backfill.py` (upload SD data to fill OSeM gaps)
+11. SHT4x driver (the HDC1080 driver already exists, added 2026-10-13 for bench testing) and `tools/sd_backfill.py` (upload SD data to fill OSeM gaps)
 12. Optional: LoRaWAN session persistence across reboots, or a switch to RadioLib (session persistence built in, SX126x radios)
 13. Fix in `ttn-osem-integration`: missing Cayenne channel → no value instead of 0 (§6, finding 4)
 
@@ -767,5 +785,5 @@ Resolved on 2026-10-13: see §1.1.
 
 Still open:
 1. **SD card model:** 4 GB is decided. We should still pick an industrial / high-endurance model for the outdoor temperature range.
-2. **To verify in phase 0:** flash/PSRAM size, LMIC on the ESP32-S2 with the shared DIO0/DIO1 pin and `LMIC_setClockError`, whether the bootloader supports app rollback, whether the system time survives software resets on the ESP32-S2.
+2. **To verify on hardware:** LMIC on the ESP32-S2 with the shared DIO0/DIO1 pin and `LMIC_setClockError`, whether the system time survives software resets. (Flash 4 MB + PSRAM and bootloader rollback support are confirmed.)
 3. **Gateway coverage** at the Olpe sites: are there TTN gateways close enough for SF7–SF8?
