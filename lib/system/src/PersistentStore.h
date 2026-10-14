@@ -25,7 +25,8 @@ bool backupConfigJson(const char* json);
 
 // --- secrets ----------------------------------------------------------------------
 namespace secret {
-constexpr const char* kLoRaAppKey = "lora_appkey";  // 16 bytes
+constexpr const char* kLoRaAppKey = "lora_appkey";       // 16 bytes
+constexpr const char* kServicePassword = "service_pw";  // 8-63 ASCII characters (WPA2)
 }
 bool setSecret(const char* key, const uint8_t* data, size_t len);
 bool hasSecret(const char* key);

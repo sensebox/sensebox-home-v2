@@ -62,20 +62,22 @@ Open the serial monitor at 115200 baud (`pio device monitor`). Commands are one 
 | Command | What it does |
 |---|---|
 | `help` | List the commands. |
-| `status` | Firmware version, normal/safe mode, uptime, reset reason, time sync, memory, the health of every component, every sensor (state, readings, errors, retry countdown) and LoRaWAN (joined, AppKey set/missing, uplinks, downlinks, spreading factor, RSSI/SNR, remaining airtime budget). |
+| `status` | Firmware version, normal/safe/service mode, uptime, reset reason, time sync, memory, the health of every component, every sensor (state, readings, errors, retry countdown) and LoRaWAN (joined, AppKey set/missing, uplinks, downlinks, spreading factor, RSSI/SNR, remaining airtime budget). |
 | `config` | Print the **stored** config as JSON. Secrets (the AppKey) are never included. If it differs from the running config, a note says a reboot is pending. |
 | `config-set <json>` | Replace the whole config with a JSON document on one line (see [Configuration](#configuration)). It is validated first; if anything is wrong you get `error: ...` and nothing is stored. |
 | `config-set name <name>` | Set the station name (max. 31 characters, spaces allowed). |
 | `config-set uplinks devEui <hex>` | Set the LoRaWAN DevEUI: 16 hex digits, MSB first, exactly as shown in the TTN console. Upper/lower case and separators (`70 B3 D5 …`, `70:B3:…`) are accepted. Needs a `lorawan-cayenne` uplink in the config. |
 | `config-set uplinks joinEui <hex>` | Set the LoRaWAN JoinEUI (also accepted: `appEui`). Same format as the DevEUI. |
 | `appkey <hex>` | Store the LoRaWAN AppKey: 32 hex digits, MSB first, as in the TTN console. It is stored separately from the config and never printed; `status` only shows `set` or `missing`. |
-| `log` | Print the last 128 log lines. |
-| `reboot` | Restart the box. Also ends [safe mode](#safe-mode). |
+| `service-password <password>` | Set the WiFi password of [service mode](#service-mode) (8–63 characters; default `123sensebox`). Stored like the AppKey and never printed by `status` or `config`. |
+| `log` | Print the last 40 log lines. |
+| `reboot` | Restart the box into normal operation. Also ends safe mode and service mode. |
 
 Notes:
 - **`config-set` and `appkey` take effect after `reboot`.** Several `config-set` commands before one reboot add up: each edit starts from the stored config.
 - **Field names are case-insensitive** (`devEUI` = `devEui`).
-- **Lines can be up to 3071 characters.** If a pasted line arrives incomplete, the console says so and doesn't run it.
+- **Lines can be up to 2047 characters** (a complete config is about 1000). If a pasted line arrives incomplete, the console says so and doesn't run it.
+- **The console also works in service mode**, e.g. to change settings or to `reboot`. There, `status` prints the status saved before service mode.
 
 ### Log format
 
@@ -94,8 +96,57 @@ Notes:
 | 🟢 - short green flash every 5 s | everything OK |
 | 🟠 - orange flash every 2 s | degraded: something needs attention (e.g. not joined yet, a window without valid values) |
 | 🔴 - red flash every second | error: a component failed (e.g. a sensor) |
-| 🟣 - purple | service mode requested (BOOT held ≥ 3 s); the web UI isn't implemented yet |
-| 🔴🟣 - alternating red/purple | If the box crashes (panic, watchdog, brownout) more than 5 times in a row without running normally for 10 minutes, it starts in **safe mode**. Sensors and LoRaWAN stay off and only the console runs, so a broken config can't keep the box in a reboot loop. |
+| 🟣 - purple | [service mode](#service-mode): BOOT held ≥ 3 s (the box restarts when you release it), and while service mode runs |
+| 🔴🟣 - alternating red/purple | If the box crashes (panic, watchdog, brownout) more than 5 times in a row without running normally for 10 minutes, it starts in **safe mode**. Sensors and LoRaWAN stay off and only the console runs, so a broken config can't keep the box in a reboot loop. Service mode can be started from safe mode with the BOOT button. |
+
+---
+
+## Service mode
+
+Service mode opens a WiFi access point with a web page for checking and setting up the box from a phone or laptop, without a USB cable.
+
+The MCU S2 has no PSRAM, and WiFi needs a large part of the RAM. So service mode **replaces** normal operation: while it runs, nothing is measured and nothing is sent over LoRaWAN. Before switching, the box saves its current status, and the web page shows that saved status.
+
+**Start:**
+1. Hold the **BOOT** button for 3 seconds while the box is running. The LED turns purple.
+2. Release the button. The box saves its status and restarts into service mode.
+
+Press BOOT only *after* the box has started. Held during power-on or reset, it puts the chip into flashing mode instead.
+
+**Connect:**
+1. Join the WiFi network `senseBox-…` (the serial number, or the last 6 digits of the MAC address). The password is **`123sensebox`**, unless a different one was set with `service-password` on the serial console. The serial console also shows the network name and password when service mode starts (`*** service mode: WiFi "…", password "…" ***`).
+2. The web page usually opens by itself; otherwise open `http://192.168.4.1/`.
+
+**The web page shows:**
+- the status saved before service mode: overall health, sensors, latest values, LoRaWAN and components
+- settings: station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
+- the complete config as JSON, to edit
+- the log before and during service mode
+- a **Restart into normal mode** button
+
+Changes are stored immediately and take effect after the restart.
+
+**Leave:** any restart ends service mode:
+- the restart button on the web page
+- `reboot` on the serial console
+- unplugging the power
+- automatically after `service.apTimeoutMin` minutes (default 15) without page requests and without a connected device
+
+Pressing BOOT again does nothing in service mode.
+
+The web page uses a small REST API, which tools can use too:
+
+| Request | What it does |
+|---|---|
+| `GET /api/status` | service-mode info (network, clients, time until timeout, memory) and the saved status |
+| `GET /api/log` | log lines before and during service mode |
+| `GET /api/config` | stored config (no secrets), whether the AppKey is set, whether a restart is pending |
+| `POST /api/config` | store a complete config (JSON body) |
+| `POST /api/config/field` | `{"field": "name" \| "uplinks.devEui" \| "uplinks.joinEui", "value": "…"}` |
+| `POST /api/appkey` | `{"appKey": "<32 hex digits>"}` |
+| `POST /api/reboot` | restart into normal operation |
+
+All answers are JSON; errors come as `{"ok": false, "error": "…"}`.
 
 ---
 
@@ -143,7 +194,7 @@ All sections are optional; missing fields use the defaults below. Unknown fields
 | `sensors` | no | List of connected sensors (max. 8). Empty = the box measures nothing. |
 | `uplinks` | no | List of data targets (max. 2). Empty = nothing is sent; the box only measures. |
 | `storage` | no | SD card settings. *Not active yet.* |
-| `service` | no | Service mode settings. *Not active yet.* |
+| `service` | no | [Service mode](#service-mode) settings. |
 | `deployment` | no | Free JSON object for installation metadata (location, mounting height, shield, …), max. 511 characters. Stored and exported, not interpreted by the firmware. |
 
 ### `station`
@@ -222,11 +273,11 @@ How sending works:
 | `highWatermarkPct` | `20` | Stop deleting when this much space is free (%). Must be above `lowWatermarkPct`. |
 | `minRetentionDays` | `30` | Never delete data younger than this. |
 
-### `service` *(not active yet)*
+### `service`
 
 | Field | Default | Description |
 |---|---|---|
-| `apTimeoutMin` | `15` | The service-mode WiFi access point closes after this many minutes without activity, `1`–`240`. |
+| `apTimeoutMin` | `15` | Service mode ends (restart into normal operation) after this many minutes without page requests and without a connected device, `1`–`240`. |
 
 ### Quality flags
 

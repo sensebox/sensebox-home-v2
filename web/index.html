@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>senseBox:home service</title>
+<style>
+:root{--bg:#f5f6f7;--card:#fff;--fg:#1c2329;--mute:#5f6b75;--line:#dde2e6;--ok:#1d7d3f;--warn:#a45d00;--err:#b3261e;--acc:#00727a}
+@media(prefers-color-scheme:dark){:root{--bg:#121619;--card:#1c2227;--fg:#e6ebef;--mute:#9aa6b0;--line:#2e373e;--ok:#5cc77f;--warn:#e7a34a;--err:#f2827b;--acc:#4dc2c9}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:16px;border-bottom:1px solid var(--line);background:var(--card)}h1{font-size:18px;margin:0}
+.sub{color:var(--mute);font-size:13px}main{max-width:900px;margin:0 auto;padding:16px}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+h2{font-size:15px;margin:0 0 10px}table{width:100%;border-collapse:collapse;font-size:14px}
+td,th{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:600}
+.ok{color:var(--ok)}.degraded,.warming_up,.initializing,.W{color:var(--warn)}.error,.E{color:var(--err)}
+.banner{border-left:4px solid var(--acc)}label{display:block;font-size:13px;color:var(--mute);margin:10px 0 3px}
+input,textarea{width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:14px ui-monospace,Menlo,Consolas,monospace}
+textarea{min-height:220px}.row{display:flex;gap:8px}.row input{flex:1}
+button{padding:7px 14px;border:1px solid var(--acc);border-radius:6px;background:var(--acc);color:#fff;font-size:14px;cursor:pointer}
+button.sec{background:transparent;color:var(--acc)}.msg{font-size:13px;margin-top:6px;min-height:1.2em}
+pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.saved{border:2px dashed var(--mute);border-radius:10px;padding:12px 12px 0;margin-bottom:14px;background:repeating-linear-gradient(135deg,transparent 0 12px,var(--line) 12px 13px)}
+.saved section{opacity:.92}.savedHead{background:var(--card);border-radius:8px;padding:12px 16px;margin-bottom:12px}
+.savedHead h2{margin:6px 0 4px}.savedHead p{margin:0;color:var(--mute);font-size:14px}
+.tag{display:inline-block;background:var(--mute);color:var(--card);font-size:12px;font-weight:700;letter-spacing:.06em;padding:2px 8px;border-radius:4px}
+.live{display:inline-block;background:var(--ok);color:var(--card);font-size:11px;font-weight:700;letter-spacing:.06em;padding:1px 6px;border-radius:4px;vertical-align:2px;margin-left:6px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px 16px}.grid div span{color:var(--mute)}
+</style></head><body>
+<header><h1 id="title">senseBox:home</h1><div class="sub" id="fw"></div></header>
+<main>
+<section class="banner"><h2>Service mode</h2>
+<p style="margin:0 0 8px">Sensors and LoRaWAN are paused: <b>nothing is measured or sent while service mode runs.</b>
+Settings changed here apply after the restart. Service mode closes after <b id="left">-</b> without activity.</p>
+<button id="reboot">Restart into normal mode</button><div class="msg" id="rebootMsg"></div></section>
+
+<div class="saved">
+<div class="savedHead"><span class="tag">SAVED · NOT LIVE</span>
+<h2>Status saved <span id="savedWhen">before service mode started</span></h2>
+<p>Frozen at the moment service mode was started. These values do not change until the box runs normally again.</p></div>
+<section><h2>Overview (saved)</h2><div class="grid" id="overview"></div></section>
+<section><h2>Sensors (saved)</h2><table id="sensors"></table></section>
+<section><h2>Last measured values (saved)</h2><table id="values"></table></section>
+<section><h2>LoRaWAN (saved)</h2><div class="grid" id="lorawan"></div></section>
+<section><h2>Components (saved)</h2><table id="components"></table></section>
+<section><h2>Log before service mode (saved)</h2><pre id="logBefore"></pre></section>
+</div>
+
+<section><h2>Settings<span class="live">LIVE</span></h2>
+<label for="name">Station name</label><div class="row"><input id="name" maxlength="31"><button data-field="name">Save</button></div>
+<label for="devEui">LoRaWAN DevEUI (16 hex digits, as in TTN)</label><div class="row"><input id="devEui" maxlength="23"><button data-field="uplinks.devEui">Save</button></div>
+<label for="joinEui">LoRaWAN JoinEUI / AppEUI</label><div class="row"><input id="joinEui" maxlength="23"><button data-field="uplinks.joinEui">Save</button></div>
+<label for="appKey">LoRaWAN AppKey (32 hex digits; currently <span id="appKeyState">-</span>)</label><div class="row"><input id="appKey" maxlength="32" autocomplete="off"><button id="saveAppKey">Save</button></div>
+<div class="msg" id="settingsMsg"></div></section>
+
+<section><h2>Configuration (JSON)<span class="live">LIVE</span></h2><textarea id="cfg" spellcheck="false"></textarea>
+<div class="row" style="margin-top:8px"><button id="saveCfg">Save configuration</button><button class="sec" id="loadCfg">Reload</button></div>
+<div class="msg" id="cfgMsg"></div></section>
+
+<section><h2>Log during service mode<span class="live">LIVE</span></h2><pre id="logNow"></pre><div style="margin-top:8px"><button class="sec" id="loadLog">Reload</button></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function td(tr,text,cls){const c=document.createElement('td');c.textContent=text??'';if(cls)c.className=cls;tr.appendChild(c);}
+function table(el,head,rows){el.innerHTML='';const h=document.createElement('tr');head.forEach(x=>{const t=document.createElement('th');t.textContent=x;h.appendChild(t);});el.appendChild(h);
+ if(!rows.length){const tr=document.createElement('tr');td(tr,'none');el.appendChild(tr);}rows.forEach(r=>{const tr=document.createElement('tr');r.forEach(c=>Array.isArray(c)?td(tr,c[0],c[1]):td(tr,c));el.appendChild(tr);});}
+function grid(el,items){el.innerHTML='';items.forEach(([k,v,cls])=>{const d=document.createElement('div');const s=document.createElement('span');s.textContent=k+': ';d.appendChild(s);const b=document.createElement('b');b.textContent=v;if(cls)b.className=cls;d.appendChild(b);el.appendChild(d);});}
+function dur(s){if(s==null)return'-';const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+(d||h?h+'h ':'')+m+'min';}
+function ago(up,at){return at?dur(up-at)+' before':'never';}
+function ts(v){return(v.quality&64)?'uptime '+dur(v.timestamp):new Date(v.timestamp*1000).toLocaleString();}
+async function api(path,body){const r=await fetch(path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:typeof body==='string'?body:JSON.stringify(body)});return r.json();}
+function show(el,res,okText){el.textContent=res.ok?okText:'Error: '+res.error;el.className='msg '+(res.ok?'ok':'error');}
+function savedWhen(st){const s=st.snapshot;if(!s)return;const ago='about '+dur(st.service.uptimeS)+' ago';
+ $('savedWhen').textContent=s.utc?'at '+new Date(s.utc*1000).toLocaleString()+' ('+ago+')':ago;}
+async function loadStatus(){const st=await api('/api/status');$('left').textContent=dur(st.service.secondsLeft);$('fw').textContent='firmware '+st.firmware+' · WiFi '+st.service.ssid;
+ const s=st.snapshot;if(!s){$('savedWhen').textContent='- none available';grid($('overview'),[['Status','no saved status (service mode was not started with the button)']]);return;}
+ savedWhen(st);
+ $('title').textContent='senseBox:home '+(s.station||'');
+ grid($('overview'),[['Overall',s.overall,s.overall],['Mode',s.safeMode?'safe mode':'normal'],['Uptime then',dur(s.uptimeS)],['Clock then',s.utc?'synced':'not synced'],['Last reset',s.resetReason],['Free heap',s.heap.free+' B (min '+s.heap.minFree+')']]);
+ table($('sensors'),['Slot','Type','State','Readings','Errors','Last error','Last good'],s.sensors.map(x=>[x.slot,x.type,[x.state,x.state],x.readingCount,x.errorCount,x.lastError==='none'?'':x.lastError,ago(s.uptimeS,x.lastGoodUptimeS)]));
+ table($('values'),['Slot','Phenomenon','Value','Quality','Measured'],s.values.map(v=>[v.slot,v.phenomenon,v.value.toFixed(2)+' '+v.unit,'0x'+v.quality.toString(16).padStart(3,'0'),ts(v)]));
+ const l=s.lorawan;grid($('lorawan'),l.configured?[['Joined',l.joined?'yes':'no',l.joined?'ok':'degraded'],['AppKey',l.appKeySet?'set':'missing',l.appKeySet?'ok':'error'],['Join attempts',l.joinAttempts],['Uplinks',l.uplinks],['Downlinks',l.downlinks],['Last SF',l.spreadingFactor?'SF'+l.spreadingFactor:'-'],['RSSI / SNR',l.uplinks?l.lastRssi+' dBm / '+l.lastSnr+' dB':'-'],['Airtime budget',Math.round(l.budgetMs/100)/10+' s']]:[['LoRaWAN','not configured']]);
+ table($('components'),['Component','Status','Errors','Last error'],s.components.map(c=>[c.name,[c.status,c.status],c.errorCount,c.lastError]));}
+async function loadConfig(){const r=await api('/api/config');if(!r.config){$('cfgMsg').textContent='Error: '+r.error;return;}
+ $('cfg').value=JSON.stringify(r.config,null,2);$('name').value=r.config.station.name;const u=(r.config.uplinks||[]).find(x=>x.type==='lorawan-cayenne');
+ $('devEui').value=u?u.devEui:'';$('joinEui').value=u?u.joinEui:'';$('appKeyState').textContent=r.appKeySet?'set':'not set';
+ $('cfgMsg').textContent=r.differsFromRunning?'Stored configuration differs from the one that ran before: restart to apply.':'';}
+function fmtLog(lines){return lines.map(l=>'['+String(l.uptimeS).padStart(7)+'] '+l.level+' '+l.tag.padEnd(8)+' '+l.msg).join('\n')||'(empty)';}
+async function loadLog(){const r=await api('/api/log');$('logBefore').textContent=fmtLog(r.before);$('logNow').textContent=fmtLog(r.now);}
+document.querySelectorAll('button[data-field]').forEach(b=>b.onclick=async()=>{const input=b.parentElement.querySelector('input');
+ const res=await api('/api/config/field',{field:b.dataset.field,value:input.value.trim()});show($('settingsMsg'),res,'Saved. Restart to apply.');if(res.ok)loadConfig();});
+$('saveAppKey').onclick=async()=>{const res=await api('/api/appkey',{appKey:$('appKey').value.trim()});show($('settingsMsg'),res,'AppKey saved. Restart to apply.');if(res.ok){$('appKey').value='';loadConfig();}};
+$('saveCfg').onclick=async()=>{let txt=$('cfg').value;try{txt=JSON.stringify(JSON.parse(txt));}catch(e){$('cfgMsg').textContent='Error: not valid JSON ('+e.message+')';$('cfgMsg').className='msg error';return;}
+ const res=await api('/api/config',txt);show($('cfgMsg'),res,'Saved. Restart to apply.');if(res.ok)loadConfig();};
+$('loadCfg').onclick=loadConfig;$('loadLog').onclick=loadLog;
+$('reboot').onclick=async()=>{if(!confirm('Restart into normal mode? The WiFi access point closes.'))return;await api('/api/reboot',{});$('rebootMsg').textContent='Restarting. You can close this page.';};
+loadStatus();loadConfig();loadLog();setInterval(()=>api('/api/status').then(st=>{$('left').textContent=dur(st.service.secondsLeft);savedWhen(st);}).catch(()=>{}),30000);
+</script></body></html>

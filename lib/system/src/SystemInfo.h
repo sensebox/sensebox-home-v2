@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
+#include <new>
+
 // Reset reason, breadcrumbs, heap figures and the task watchdog (plan §4.7).
 
 namespace sysinfo {
@@ -28,7 +31,20 @@ uint32_t largestFreeBlock();
 // Task watchdog for the calling task (5 s, configured by the framework).
 void watchdogAddCurrentTask();
 void watchdogFeed();
+// Changes the task watchdog timeout (all subscribed tasks). Default 5 s.
+void watchdogSetTimeout(uint32_t timeoutMs);
 
 uint64_t uptimeMs();
+
+// Working memory for one console command or web request (the MCU S2 has no PSRAM, so such
+// buffers must not stay allocated). Freed when the pointer goes out of scope; nullptr if the
+// heap is exhausted - always check.
+template <typename T>
+std::unique_ptr<T> makeTemp() {
+  return std::unique_ptr<T>(new (std::nothrow) T());
+}
+inline std::unique_ptr<char[]> makeTempBuffer(size_t size) {
+  return std::unique_ptr<char[]>(new (std::nothrow) char[size]);
+}
 
 }  // namespace sysinfo

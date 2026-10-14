@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "station": {
+    "name": "",
+    "timezone": "Europe/Berlin"
+  },
+  "sensors": [
+    {
+      "slot": 0,
+      "type": "am2315c",
+      "intervalSec": 60
+    },
+    {
+      "slot": 1,
+      "type": "sps30",
+      "intervalSec": 60,
+      "fanCleaningIntervalDays": 4
+    }
+  ],
+  "uplinks": [
+    {
+      "type": "lorawan-cayenne",
+      "devEui": "",
+      "joinEui": "0000000000000000",
+      "intervalSec": 600,
+      "timeSyncIntervalSec": 259200,
+      "channels": [
+        {
+          "ch": 1,
+          "slot": 0,
+          "phenomenon": "air_temperature",
+          "lpp": "temperature"
+        },
+        {
+          "ch": 2,
+          "slot": 0,
+          "phenomenon": "relative_humidity",
+          "lpp": "relative_humidity"
+        },
+        {
+          "ch": 3,
+          "slot": 1,
+          "phenomenon": "pm2_5",
+          "lpp": "analog_in"
+        },
+        {
+          "ch": 4,
+          "slot": 1,
+          "phenomenon": "pm10",
+          "lpp": "analog_in"
+        },
+        {
+          "ch": 5,
+          "slot": 1,
+          "phenomenon": "pm1",
+          "lpp": "analog_in"
+        },
+        {
+          "ch": 6,
+          "slot": 1,
+          "phenomenon": "pm4",
+          "lpp": "analog_in"
+        }
+      ]
+    }
+  ],
+  "storage": {
+    "sd": "auto",
+    "lowWatermarkPct": 10,
+    "highWatermarkPct": 20,
+    "minRetentionDays": 30
+  },
+  "service": {
+    "apTimeoutMin": 15
+  },
+  "deployment": {}
+}

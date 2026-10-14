@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 #include <ctype.h>
+#include <memory>
+#include <new>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -241,12 +243,16 @@ DecodeResult decode(const char* json, size_t len, StationConfig& out, const Migr
   if (ms != MigrationStatus::Current && ms != MigrationStatus::Migrated) return r;
   r.migrated = ms == MigrationStatus::Migrated;
 
-  // Decode into a scratch copy so `out` stays valid if validation fails half-way.
-  static StationConfig scratch;
-  setDefaults(scratch);
-  if (!decodeRoot(doc.as<JsonObjectConst>(), scratch, r)) return r;
-  scratch.schemaVersion = kSchemaVersion;
-  out = scratch;
+  // Decode into a scratch copy so `out` stays valid if validation fails half-way. The copy is on
+  // the heap only while decoding (config changes are rare; static RAM is scarce without PSRAM).
+  std::unique_ptr<StationConfig> scratch(new (std::nothrow) StationConfig());
+  if (!scratch) {
+    fail(r, "out of memory");
+    return r;
+  }
+  if (!decodeRoot(doc.as<JsonObjectConst>(), *scratch, r)) return r;
+  scratch->schemaVersion = kSchemaVersion;
+  out = *scratch;
   r.ok = true;
   return r;
 }

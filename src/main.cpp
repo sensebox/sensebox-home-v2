@@ -9,19 +9,24 @@
 #include "App.h"
 #include "Board.h"
 #include "BootGuard.h"
+#include "BootMode.h"
 #include "ButtonDetector.h"
 #include "CayenneUplink.h"
 #include "Clock.h"
 #include "ConfigCodec.h"
+#include "ConfigEditor.h"
 #include "Drivers.h"
 #include "Health.h"
+#include "LatestValues.h"
 #include "LmicTransport.h"
 #include "Log.h"
 #include "PersistentStore.h"
 #include "Pipeline.h"
 #include "SensorManager.h"
 #include "SerialConsole.h"
+#include "ServiceMode.h"
 #include "StationConfig.h"
+#include "StatusCapture.h"
 #include "StatusLed.h"
 #include "SystemInfo.h"
 #include "Version.h"
@@ -64,6 +69,7 @@ class MeasurementLog : public MeasurementSink {
 
 SerialLogSink g_serialLog;
 MeasurementLog g_measurementLog;
+LatestValues g_latest;  // for the status snapshot taken before service mode
 
 Clock g_clock(uptimeMs);
 HealthRegistry g_health(uptimeS);
@@ -76,23 +82,34 @@ CayenneUplink* g_cayenne = nullptr;  // created at setup if configured
 StatusLed g_led;
 ButtonDetector g_button;
 BootGuard g_bootGuard;
-App g_app{g_clock, g_health, g_config, g_sensors, g_lora, false};
+App g_app{g_clock, g_health, g_config, g_sensors, g_lora, false, false};
 SerialConsole g_console(g_app);
+ServiceMode g_service;
 
 HealthRegistry::Id g_configHealth = HealthRegistry::kInvalid;
 uint32_t g_lastStatusLogMs = 0;
-char g_jsonBuf[4096];
+bool g_serviceRequested = false;  // BOOT held long enough; restart when it is released
 
 void loadConfig() {
   g_configHealth = g_health.add("config");
   config::setDefaults(g_config);
 
-  size_t len = persist::loadConfigJson(g_jsonBuf, sizeof(g_jsonBuf));
+  // Only needed during boot, so it lives on the heap and is freed again.
+  const size_t cap = cfgedit::kJsonCap;
+  auto buffer = sysinfo::makeTempBuffer(cap);
+  if (!buffer) {
+    g_health.reportError(g_configHealth, 3, "out of memory loading config");
+    LOGE(kTag, "out of memory loading config");
+    return;
+  }
+  char* json = buffer.get();
+  size_t len = persist::loadConfigJson(json, cap);
   const char* source = "nvs";
 #if SBH_DEV_BUILD
   if (len == 0) {
-    strncpy(g_jsonBuf, olpeTemplateJson, sizeof(g_jsonBuf) - 1);
-    len = strlen(g_jsonBuf);
+    strncpy(json, olpeTemplateJson, cap - 1);
+    json[cap - 1] = '\0';
+    len = strlen(json);
     source = "built-in Olpe template (dev build)";
   }
 #endif
@@ -102,17 +119,17 @@ void loadConfig() {
     return;
   }
 
-  const config::DecodeResult r = config::decode(g_jsonBuf, len, g_config);
+  const config::DecodeResult r = config::decode(json, len, g_config);
   if (!r.ok) {
     // Never delete a config we can't read: keep it as backup, run unconfigured.
-    persist::backupConfigJson(g_jsonBuf);
+    persist::backupConfigJson(json);
     g_health.reportError(g_configHealth, 2, r.error);
     LOGE(kTag, "config from %s rejected: %s (kept as backup)", source, r.error);
     return;
   }
   if (r.migrated) {
-    persist::backupConfigJson(g_jsonBuf);
-    if (config::encode(g_config, g_jsonBuf, sizeof(g_jsonBuf)) > 0) persist::saveConfigJson(g_jsonBuf);
+    persist::backupConfigJson(json);
+    if (config::encode(g_config, json, cap) > 0) persist::saveConfigJson(json);
     LOGI(kTag, "config migrated from schema %u to %u", r.fromVersion, g_config.schemaVersion);
   }
   g_health.reportSuccess(g_configHealth);
@@ -158,19 +175,46 @@ void periodicStatusLog(uint32_t nowMs) {
        static_cast<unsigned long>(sysinfo::minFreeHeap()), static_cast<unsigned long>(sysinfo::largestFreeBlock()));
 }
 
+// Saves the status of normal operation and restarts into service mode (plan §4.8).
+void enterServiceMode(uint32_t nowMs) {
+  LOGI(kTag, "restarting into service mode");
+  captureStatus(g_app, g_latest, nowMs, bootmode::snapshot());
+  bootmode::requestServiceMode();
+  Serial.flush();
+  delay(100);
+  ESP.restart();
+}
+
+// BOOT held >= 3 s: the LED turns purple, and the restart happens when the button is released.
+// Restarting while GPIO0 (a strapping pin) is still held could start the ROM download mode.
 void handleButton(uint32_t nowMs) {
-  switch (g_button.update(board::serviceButtonPressed(), nowMs)) {
-    case ButtonDetector::Event::LongPress:
-      // Service mode (AP + web UI) is phase 5; for now only the LED feedback.
-      LOGI(kTag, "service mode requested (not implemented yet)");
-      g_led.setMode(StatusLed::Mode::ServiceMode);
-      break;
-    case ButtonDetector::Event::ShortPress:
-      if (g_led.mode() == StatusLed::Mode::ServiceMode) {
-        g_led.setMode(g_app.safeMode ? StatusLed::Mode::SafeMode : StatusLed::Mode::Health);
-      }
-      break;
-    case ButtonDetector::Event::None: break;
+  if (g_button.update(board::serviceButtonPressed(), nowMs) == ButtonDetector::Event::LongPress) {
+    g_serviceRequested = true;
+    g_led.setMode(StatusLed::Mode::ServiceMode);
+    LOGI(kTag, "service mode requested: release the button");
+  }
+  if (g_serviceRequested && !g_button.pressed()) enterServiceMode(nowMs);
+}
+
+void startServiceMode() {
+  sysinfo::breadcrumb("service");
+  g_led.setMode(StatusLed::Mode::ServiceMode);
+  // The web server can wait up to 5 s for a slow client (e.g. a POST body that stalls); with the
+  // default 5 s watchdog that would end in a crash reset.
+  sysinfo::watchdogSetTimeout(15000);
+  const StatusSnapshot& snap = bootmode::snapshot();
+  const bool haveSnapshot = snapshot::isValid(snap);
+  LOGI(kTag, "SERVICE MODE: sensors and LoRaWAN are off%s", haveSnapshot ? "" : " (no saved status)");
+
+  persist::DeviceIdentity id{};
+  persist::loadIdentity(id);
+  ServiceMode::Options options;
+  options.running = &g_config;
+  options.snapshot = haveSnapshot ? &snap : nullptr;
+  options.deviceSerial = id.serial;
+  options.apTimeoutMin = g_config.service.apTimeoutMin;
+  if (!g_service.begin(options)) {
+    LOGE(kTag, "service mode could not start; console still works, 'reboot' to return to normal mode");
   }
 }
 
@@ -192,6 +236,10 @@ void setup() {
   LOGI(kTag, "senseBox:home v2 firmware %s, reset reason: %s", SBH_FW_VERSION, sysinfo::resetReason());
   if (sysinfo::previousBreadcrumb()[0] != '\0') LOGW(kTag, "previous run stopped in: %s", sysinfo::previousBreadcrumb());
 
+  // One-shot: consumed now, so any later restart is a normal start again.
+  g_app.serviceMode = bootmode::consumeServiceModeRequest();
+  if (!g_app.serviceMode) snapshot::invalidate(bootmode::snapshot());
+
   persist::begin();
   persist::saveUnhealthyBoots(g_bootGuard.onBoot(persist::loadUnhealthyBoots(), sysinfo::lastResetWasAbnormal()));
   g_app.safeMode = g_bootGuard.safeMode();
@@ -205,7 +253,9 @@ void setup() {
 
   loadConfig();
 
-  if (g_app.safeMode) {
+  if (g_app.serviceMode) {
+    startServiceMode();
+  } else if (g_app.safeMode) {
     LOGE(kTag, "SAFE MODE: %u crashes in a row without reaching a healthy state; sensors and uplinks stay off",
          g_bootGuard.unhealthyBoots());
     LOGE(kTag, "fix the cause (e.g. config-set), then 'reboot' to leave safe mode");
@@ -215,6 +265,7 @@ void setup() {
     board::initSensorBus();
     logSensorBus();
     g_pipeline.addSink(&g_measurementLog);
+    g_pipeline.addSink(&g_latest);
     g_sensors.configure(g_config, drivers::table(), drivers::count());
     g_sensors.begin(millis());
 
@@ -232,6 +283,15 @@ void setup() {
 void loop() {
   const uint32_t nowMs = millis();
   sysinfo::watchdogFeed();
+
+  if (g_app.serviceMode) {
+    // Nothing of normal operation runs; the BOOT button is ignored (leave by restarting).
+    g_service.loop(nowMs);
+    g_console.poll(nowMs);
+    g_led.tick(nowMs, g_health.overall());
+    vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));
+    return;
+  }
 
   if (!g_app.safeMode) {
     g_sensors.tick(nowMs);

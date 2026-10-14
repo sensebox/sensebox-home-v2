@@ -31,8 +31,8 @@ void setUp() { setDefaults(g_cfg); }
 void tearDown() {}
 
 void test_olpe_template_decodes() {
-  const size_t n = loadFile("config/olpe-template.json", g_json, sizeof(g_json));
-  TEST_ASSERT_TRUE_MESSAGE(n > 0, "config/olpe-template.json not found");
+  const size_t n = loadFile("test/fixtures/olpe.json", g_json, sizeof(g_json));
+  TEST_ASSERT_TRUE_MESSAGE(n > 0, "test/fixtures/olpe.json not found");
   const DecodeResult r = decode(g_json, n, g_cfg);
   TEST_ASSERT_TRUE_MESSAGE(r.ok, r.error);
   TEST_ASSERT_FALSE(r.migrated);
@@ -55,7 +55,7 @@ void test_olpe_template_decodes() {
 }
 
 void test_encode_decode_roundtrip() {
-  const size_t n = loadFile("config/olpe-template.json", g_json, sizeof(g_json));
+  const size_t n = loadFile("test/fixtures/olpe.json", g_json, sizeof(g_json));
   TEST_ASSERT_TRUE(decode(g_json, n, g_cfg).ok);
   g_cfg.sensors[0].calibrations[0] = {Phenomenon::AirTemperature, 1.01f, -0.4f};
   g_cfg.sensors[0].calibrationCount = 1;
@@ -214,7 +214,7 @@ void test_readme_examples_decode() {
   TEST_ASSERT_TRUE_MESSAGE(r.ok, r.error);
   TEST_ASSERT_EQUAL(2, g_cfg.uplinks[0].lorawan.channelCount);
 
-  size_t n = loadFile("config/olpe-template.json", g_json, sizeof(g_json));
+  size_t n = loadFile("test/fixtures/olpe.json", g_json, sizeof(g_json));
   r = decode(g_json, n, g_cfg);
   TEST_ASSERT_TRUE_MESSAGE(r.ok, r.error);
 

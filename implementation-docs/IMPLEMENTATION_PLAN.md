@@ -56,13 +56,18 @@ Done (builds for the MCU S2; 46 native unit tests pass; **not yet run on hardwar
 - Serial console for dev/provisioning (status, config, AppKey).
 - HDC1080 driver (Adafruit HDC1000 library) for bench testing and existing boxes.
 
-Not done yet: phase 3 (SD storage, janitor), phase 5 (service mode / web UI), phase 6 (OTA), phase 7, `tools/` scripts, on-device tests.
+- Phase 5, service mode (2026-10-14; not yet run on hardware): separate boot mode entered with a 3 s BOOT press, status snapshot in RTC memory, WPA2 access point with captive DNS, embedded web UI (status before service mode, settings incl. write-only AppKey, config JSON, logs, restart), REST API `/api/...`, inactivity timeout, `service-password` console command. Not done: auto-start when unconfigured or in safe mode, sensor check, diagnostic report download, browser time → clock. WebSocket live values are dropped: nothing is measured in service mode.
+
+Not done yet: phase 3 (SD storage, janitor), phase 6 (OTA), phase 7, `tools/` scripts, on-device tests.
 
 Findings during implementation:
 - The stock `sensebox_mcu_esp32s2` board variant blocks 5 s at boot and switches the boot partition to `ota_1` if BOOT is pressed. With our partition table that would bypass OTA rollback, so the firmware uses its own variant (`variants/sensebox_home_v2`) without it.
-- The framework bootloader has app rollback enabled → phase 0 question answered. Flash 4 MB, PSRAM present.
+- The framework bootloader has app rollback enabled → phase 0 question answered. Flash 4 MB. **PSRAM is not guaranteed:** the board definition enables it, but the test board has none in the heap (confirmed on hardware 2026-10-13; the stock variant also distinguishes MCU S2 revisions with and without PSRAM). The firmware must run without it.
 - Adafruit AHTX0's `getEvent()` / `begin()` busy-wait without an upper bound. Mitigated by a presence check before each measurement; a sensor vanishing mid-measurement still ends in a watchdog reset.
 - SF12 airtime for the 23 B frame is ~2.0 s (the first draft said ~1.5 s).
+- **Web server:** the framework's synchronous `WebServer` is used instead of ESPAsyncWebServer. It is polled from the main loop, so request handlers can use config/health/clock without locks, and it needs no extra libraries. WebSocket live values (phase 8) will need a different server or a small WebSocket add-on.
+- **Internal RAM is the tightest resource.** On the ESP32-S2 static data shares 168 KB with code that must run from internal RAM; linking WiFi takes ~87 KB of it, and WiFi needs another ~40 KB of free heap at runtime (with only 10 KB free, WPA2 handshakes failed silently while open networks worked). Rules since then: permanent buffers stay small (log ring 40 lines); working buffers for console commands, config edits and web requests are allocated per call and freed (`sysinfo::makeTemp` / `makeTempBuffer`). Service mode warns in the log below 30 KB free. Measured on a board without PSRAM (2026-10-14): 32 KB free with the AP up, 15 KB after one notebook connected, then a crash on the first HTTP requests. Fixes: no mDNS, captive DNS polled in the main loop instead of the AsyncUDP task, max. 2 clients, smaller serial RX buffer, config decode scratch on the heap only while decoding. Static data headroom after phase 5: ~9.3 KB (code + static data use 162 of 168 KB). Phases 3 and 6 must budget their RAM explicitly.
+- The firmware's partition table replaces the stock senseBox TinyUF2 layout: no **TinyUF2** (USB drag-and-drop flashing) and no **APOTA** (open-AP fallback updater in `ota_1`). APOTA accepts any image without checks and would bypass rollback; TinyUF2 costs 256 KB and brings its own bootloader. Flashing is via esptool/PlatformIO; updates in the field come with our own OTA (phase 6). If a DIY/education variant needs drag-and-drop flashing later, TinyUF2 can be added back as a partition (smaller app slots; its bootloader must then be checked for rollback support). Restoring a board to the stock layout needs esptool (files in the framework's `variants/sensebox_mcu_esp32s2/`).
 
 ---
 
@@ -93,7 +98,7 @@ Findings during implementation:
 |---|---|---|
 | Build system | **PlatformIO** | Requested; supports native unit tests and multiple envs |
 | Framework | **Arduino-ESP32 3.x (ESP-IDF 5.x underneath)** via the [pioarduino](https://github.com/pioarduino/platform-espressif32) platform, pinned to a fixed release | The official `espressif32` platform is stuck on Arduino 2.0.x (the bike pins 2.0.17). 3.x brings a current IDF: OTA rollback APIs, the newer task watchdog API, mbedTLS 3, and LittleFS fixes. Arduino keeps the sensor libraries usable. ESP-IDF APIs (NVS, OTA, WDT, `esp_reset_reason`) are called directly where needed. |
-| Board | `sensebox_mcu_esp32s2` | ⚠️ Verify the flash size (4 MB?) and the PSRAM before finalising the partition table |
+| Board | `sensebox_mcu_esp32s2` | 4 MB flash (verified). PSRAM depends on the board revision; the firmware must not rely on it. |
 | Language | C++17, no exceptions, no RTTI in our code | Small, predictable binaries |
 | JSON | ArduinoJson 7 | Used **only** for config import/export and the REST API, never in the measurement path |
 | LoRaWAN stack | **MCCI LoRaWAN LMIC** (`mcci-catena/arduino-lmic`, pinned version), SX1276/RFM95 on XBee socket 1 | Decision 2026-10-13. Proven with the LoRa-Bee and the shared interrupt pin in home v1, and familiar to the team. It supports `DeviceTimeReq`. Its limits and how we handle them are in §6.0. The `IUplink` interface keeps the library swappable (RadioLib is an option for later, see phase 8). |
@@ -247,7 +252,7 @@ class IRecordStore {                    // append-only log of Measurement record
 };
 ```
 - **SdRecordStore**: one binary append-only file per day (`/data/2026/10/2026-10-09.bin`, one folder per year and month so no single FAT directory gets huge) plus a human-readable CSV export path for the web UI. It writes with a fixed record size, so random access by sequence number works without parsing.
-- **RamRecordStore**: a static ring buffer, e.g. 2 000 records ≈ 40 KB, or more if PSRAM is available. It is used when no SD card is present or the card fails. The box keeps working; data is buffered only for a limited time, and the web UI shows a warning.
+- **RamRecordStore**: a ring buffer sized at boot: large if PSRAM is available, only a few hundred records (a few KB) without PSRAM, since internal RAM is needed for WiFi. It is used when no SD card is present or the card fails. The box keeps working; data is buffered only for a limited time, and the web UI shows a warning.
 - **Outbox:** each uplink keeps its own **cursor** (last acknowledged sequence number), persisted in NVS (written rarely, e.g. every N records, to protect flash). After a reconnect the uplink catches up from its cursor. This gives store-and-forward per target, and several targets can run independently at different speeds.
 - **SD full:** see §4.5.1.
 - **Hot-plug:** SD presence is re-checked periodically. A missing card produces a warning, not a failure.
@@ -373,19 +378,21 @@ The phase 0 spike still has to confirm this works on the ESP32-S2, since home v1
 Also new compared to home v1: the MCU S2 has a radio **reset** pin (38) and a power switch for the XB1 socket (41). The firmware uses them to reset a hung radio without rebooting the box.
 
 ### 4.8 Service mode and web UI
-- **Trigger:** **BOOT button (GPIO0)**, held for ≥ 3 s while the firmware is running. The status LED confirms with a colour change, and a short press while service mode is open closes it. The box also opens service mode automatically for the first 10 minutes after power-on if it is unconfigured or in safe mode.
+- **Separate boot mode (decision 2026-10-14):** service mode and normal operation never run at the same time. Entering service mode restarts the box into a boot mode that only starts WiFi, the web server and the console; leaving it restarts into normal operation. Reason: the MCU S2 has no PSRAM, and service mode on top of normal operation ran out of RAM (WPA2 failed at 10 KB free, crashes at 15 KB). With separate modes each gets the whole RAM, and future features in normal operation (many sensors, SD, more uplinks) can't break the repair path. Cost: no measurements while servicing.
+- **Status snapshot:** right before the restart, normal operation writes a snapshot to RTC memory (`StatusSnapshot`, 3.5 KB, survives the software restart, checksummed): overall health, every component, every sensor (state, readings, errors), the latest value per sensor/phenomenon, LoRaWAN (joined, uplinks, RSSI/SNR, airtime budget) and the last 12 log lines. Service mode shows it as "Status before service mode". After a normal start it is invalidated.
+- **Entering:** **BOOT button (GPIO0)** held ≥ 3 s while the firmware runs (normal or safe mode). The LED turns purple; the snapshot is taken and the box restarts **when the button is released**, because restarting while GPIO0 is still held could start the ROM download mode. The request is one-shot (RTC memory), so the following boot is service mode and every later boot is normal.
   - ⚠️ GPIO0 is a strapping pin: if it is held **while the board powers up or resets**, the ESP32-S2 enters the ROM download (flashing) mode instead of starting the firmware. The user guide must say "press *after* the box has started". Firmware reads it with the internal pull-up and debounces in software; it must never be driven as an output.
-- **Access point:** `senseBox-<serial>` with a WPA2 password. The default password comes from `factory_id` and is printed on the device label. The AP is **time-limited** (it closes after 15 min of inactivity). A captive portal and `http://sensebox.local` (mDNS) lead to the UI.
-- **UI (offline, embedded, no CDNs/external fonts):** plain HTML/CSS/vanilla JS or Preact, built with Vite into one gzipped bundle, which a build script converts to a C header. Pages:
-  1. **Status:** sensors (OK/ERROR, retry in, error count, last value), connectivity, upload status, last successful upload, stored/pending records
-  2. **Configuration:** station, sensors, intervals, data targets, LoRaWAN keys (write-only), WiFi (write-only)
-  3. **Diagnostics:** see §4.7, the log viewer and the **Export diagnostic report** button
-  4. **Firmware:** current version, upload a new image (OTA), rollback state
-- **REST API** (`/api/v1/...`):
-  - `GET status`, `GET/PUT config` (secrets redacted on GET; write-only fields)
-  - `GET logs`, `GET diagnostics`, `GET data?from=` (CSV)
-  - `POST ota`, `POST reboot`, `POST service/close`
-  - WebSocket `/ws/live` (phase 8)
+- **Leaving (decision 2026-10-14):** any restart: the "Restart into normal mode" button in the web UI, `reboot` on the console, a power cycle, or the inactivity timeout. The BOOT button does nothing in service mode.
+- **Access point:** `senseBox-<serial>` (or `senseBox-<last 3 MAC bytes>` without device identity), WPA2, max. 2 clients. The password defaults to `123sensebox` (decision 2026-10-14); a different one can be set with the console command `service-password` (stored as a secret in NVS, never shown in the web UI or the log). The default is not written to NVS, so a later firmware can change it for every box without its own password. The AP is **time-limited**: it closes (restart into normal mode) after `service.apTimeoutMin` (default 15) minutes without HTTP requests and without a connected client. A captive DNS (polled in the main loop, no extra task) makes phones open the UI; it is also at `http://192.168.4.1/`. No mDNS (`sensebox.local`): it costs ~6 KB of internal RAM.
+- **UI (offline, embedded, no CDNs/external fonts):** one page, `web/index.html` (plain HTML/CSS/JS), embedded into the firmware at build time. Sections: service-mode banner with restart button and timeout, status before service mode (overview, sensors, latest values, LoRaWAN, components), settings (name, DevEUI, JoinEUI, AppKey write-only), the full config as JSON, log before and during service mode.
+- **REST API:**
+  - `GET /api/status`: service info (SSID, clients, seconds until timeout, heap) + snapshot
+  - `GET /api/log`: log lines before (snapshot) and during service mode
+  - `GET /api/config`: stored config (no secrets), `appKeySet`, `differsFromRunning`; `POST /api/config`: complete config
+  - `POST /api/config/field` `{"field":"name"|"uplinks.devEui"|"uplinks.joinEui","value":"…"}`; `POST /api/appkey` `{"appKey":"…"}`
+  - `POST /api/reboot`
+  - Later: OTA upload (phase 6), diagnostic report, sensor check, browser time → clock
+- **Not implemented yet:** starting service mode by itself when the box is unconfigured or in safe mode; an on-demand sensor check (read each configured sensor once); the diagnostic report download.
 - **USB mass-storage mode** for editing files on the SD card (idea from requirements.md): the ESP32-S2 has native USB, so this is technically possible via TinyUSB MSC. It's deferred: it conflicts with the firmware's own SD access, and the REST/UI path covers the use case.
 
 ### 4.9 OTA with rollback and compatibility check
@@ -693,7 +700,7 @@ new/
 Every phase ends with something running on real hardware. Phases 0–7 make up the **Olpe release (v2.0)**.
 
 ### Phase 0: Foundations
-- [ ] Verify the remaining MCU S2 facts: flash/PSRAM size
+- [x] Verify the remaining MCU S2 facts: 4 MB flash; PSRAM not present on every board
 - [ ] Set up the PlatformIO project in `new/` with pioarduino / Arduino 3.x, envs, partition table, clang-format, CI (build + native tests)
 - [ ] Spike: MCCI LMIC on the ESP32-S2 with the home v1 pin mapping (§4.7.1: failed join, uplink without downlink, DeviceTimeReq) + OTAA join + one Cayenne uplink from the MCU S2 to TTN → OSeM (cayenne-lpp). **Lowest-risk-first:** this proves the whole Olpe data path before building the architecture.
 - [ ] Spike: confirm that the bootloader has rollback enabled
@@ -724,9 +731,11 @@ Every phase ends with something running on real hardware. Phases 0–7 make up t
 - **Exit:** 3 test boxes deliver to OSeM for 72 h. After a power cut, the SD records get correct UTC timestamps once the box has rejoined. During a gateway outage, the SD card keeps recording without gaps.
 
 ### Phase 5: Service mode and web UI
-- [ ] WifiManager (AP mode only for Olpe), captive portal, mDNS, AP timeout, BOOT-button (GPIO0) long-press trigger, browser time → Clock
-- [ ] REST API (status, config, secrets write-only, logs, diagnostics, data CSV)
-- [ ] Web UI (status, config, diagnostics + report export, firmware page), embedded bundle build
+- [x] Separate boot mode, BOOT long press, status snapshot, AP with captive DNS, inactivity timeout (2026-10-14)
+- [x] REST API (status, config, secrets write-only, logs, reboot)
+- [x] Web UI (status before service mode, settings, config JSON, logs), embedded at build time
+- [ ] Test on hardware: free heap with AP up and two clients, captive portal on Android/iOS
+- [ ] Auto-start when unconfigured / in safe mode, sensor check, diagnostic report, browser time → Clock, firmware page (with phase 6)
 - **Exit:** a non-developer can set up LoRa keys and diagnose a pulled sensor from a phone, without a laptop.
 
 ### Phase 6: OTA
@@ -785,5 +794,5 @@ Resolved on 2026-10-13: see §1.1.
 
 Still open:
 1. **SD card model:** 4 GB is decided. We should still pick an industrial / high-endurance model for the outdoor temperature range.
-2. **To verify on hardware:** LMIC on the ESP32-S2 with the shared DIO0/DIO1 pin and `LMIC_setClockError`, whether the system time survives software resets. (Flash 4 MB + PSRAM and bootloader rollback support are confirmed.)
+2. **To verify on hardware:** LMIC on the ESP32-S2 with the shared DIO0/DIO1 pin and `LMIC_setClockError`, whether the system time survives software resets. (Flash 4 MB and bootloader rollback support are confirmed; PSRAM is not present on every board.)
 3. **Gateway coverage** at the Olpe sites: are there TTN gateways close enough for SF7–SF8?

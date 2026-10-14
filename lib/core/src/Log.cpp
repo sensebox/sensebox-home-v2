@@ -84,6 +84,18 @@ size_t copyRecent(LogLine* out, size_t max) {
   return n;
 }
 
+size_t lineCount() {
+  MutexLock lock(g_mutex, kLockTimeoutMs);
+  return lock.locked() ? g_ring.size() : 0;
+}
+
+bool lineAt(size_t age, LogLine& out) {
+  MutexLock lock(g_mutex, kLockTimeoutMs);
+  if (!lock.locked() || age >= g_ring.size()) return false;
+  out = g_ring.at(g_ring.size() - 1 - age);
+  return true;
+}
+
 uint32_t droppedLines() { return static_cast<uint32_t>(g_ring.overwritten()) + g_lockDrops; }
 
 const char* levelName(LogLevel level) {

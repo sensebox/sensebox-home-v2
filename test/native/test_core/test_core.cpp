@@ -147,6 +147,12 @@ void test_logger_ring_levels_and_sinks() {
   const size_t n = logger::copyRecent(lines, 4);
   TEST_ASSERT_TRUE(n >= 2);
   TEST_ASSERT_EQUAL_STRING("value=42", lines[n - 2].msg);
+  LogLine one;
+  TEST_ASSERT_TRUE(logger::lineAt(1, one));
+  TEST_ASSERT_EQUAL_STRING("value=42", one.msg);
+  TEST_ASSERT_TRUE(logger::lineAt(0, one));
+  TEST_ASSERT_EQUAL_STRING("x", one.msg);
+  TEST_ASSERT_FALSE(logger::lineAt(logger::lineCount(), one));
   logger::removeSink(&sink);
 }
 

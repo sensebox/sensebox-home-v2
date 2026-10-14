@@ -6,7 +6,7 @@
 #include "SensorManager.h"
 #include "StationConfig.h"
 
-// Objects the serial console (and later the REST API) needs to inspect. Owned by main.cpp.
+// Objects the serial console needs to inspect. Owned by main.cpp.
 struct App {
   Clock& clock;
   HealthRegistry& health;
@@ -14,4 +14,5 @@ struct App {
   SensorManager& sensors;
   LmicTransport& lora;
   bool safeMode;
+  bool serviceMode;  // sensors and LoRaWAN are not running; see BootMode.h
 };

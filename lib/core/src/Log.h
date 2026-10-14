@@ -31,7 +31,8 @@ class LogSink {
 
 namespace logger {
 
-constexpr size_t kRingLines = 128;
+// No PSRAM: every KB of internal RAM counts (WiFi needs ~40 KB free heap in service mode).
+constexpr size_t kRingLines = 40;
 constexpr size_t kMaxSinks = 3;
 
 using UptimeMsFn = uint64_t (*)();
@@ -46,6 +47,9 @@ void log(LogLevel level, const char* tag, const char* fmt, ...) __attribute__((f
 
 // Copies up to `max` of the most recent lines, oldest first. Returns the number copied.
 size_t copyRecent(LogLine* out, size_t max);
+// Number of lines in the ring, and one line by age (0 = newest). For printing without a buffer.
+size_t lineCount();
+bool lineAt(size_t age, LogLine& out);
 // Total number of lines dropped because the ring was full (overwritten) or the lock timed out.
 uint32_t droppedLines();
 

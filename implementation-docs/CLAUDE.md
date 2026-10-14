@@ -13,21 +13,25 @@ PlatformIO isn't on PATH; use `~/.platformio/penv/bin/pio`.
 - Build: `pio run -e mcu_s2` (release) or `pio run -e mcu_s2_dev` (debug logs, uses `config/olpe-template.json` when NVS has no config)
 - Native unit tests: `pio test -e native` (all pure logic; must stay green)
 - Flash + monitor: `pio run -e mcu_s2_dev -t upload && pio device monitor`
-- Serial console on the device: type `help` (status, config, config-set, appkey, log, reboot)
+- Serial console on the device: type `help` (status, config, config-set, appkey, service-password, log, reboot)
+- Service mode: hold BOOT ≥ 3 s and release (the box restarts into it); leave it with any restart. Web UI source is `web/index.html` (embedded at build time, no external resources allowed)
 
 ## Code layout
 - `src/` composition root only (`main.cpp`) plus the serial console.
 - `lib/<module>/src/`: `core` (data model, logger, clock), `config`, `health`, `sensors` (interface + manager),
   `pipeline` (quality, calibration, aggregation), `uplinks` (Cayenne, airtime, uplink logic): all host-testable.
-  Device-only: `board`, `drivers`, `system` (NVS, reset info, watchdog), `lorawan` (LMIC); these are in `lib_ignore` of the `native` env.
+  Also host-testable: `netutil` (captive DNS answers), the snapshot in `health`.
+  Device-only: `board`, `drivers`, `system` (NVS, reset info, watchdog, boot mode, config editing), `lorawan` (LMIC), `service` (AP, web server, REST API); these are in `lib_ignore` of the `native` env.
 - `variants/sensebox_home_v2/`: own board variant (see gotchas).
 - `test/native/test_*`: Unity tests, one folder per area.
 
 ## Architecture rules (non-negotiable)
+- **Boot modes:** normal operation (incl. safe mode) and service mode never run in the same boot (`lib/system/src/BootMode.h`, `src/main.cpp`). Don't add WiFi/web features to normal operation or measurement/uplink work to service mode. Anything service mode should show about normal operation goes into the snapshot (`lib/health/src/StatusSnapshot.h`, filled in `src/StatusCapture.cpp`, kept in RTC memory; keep it below 4 KB, a test checks that).
 - **Module boundaries:** modules live in `lib/<module>/`. Sensor code knows nothing about uplinks, storage or transport. Uplinks see only `Measurement`s, never concrete sensors. Concrete classes are wired together only in `src/main.cpp` and the driver registry.
 - **A failure never takes down the box:** a failing sensor, SD card, radio or backend sets its status to `ERROR`, is retried with backoff, and is reported to Health. Everything else keeps running. No `while(1);` and no `ESP.restart()` as error handling (planned reboots go through the health supervisor).
 - **No unbounded waits:** every wait has a timeout, and nothing like `while (!sensor.ready())`. Drivers are state machines driven by `tick()`. Documented exception: `Adafruit_AHTX0::getEvent()` blocks ~80 ms. Keep the comment where it's called.
-- **No heap churn on the measurement path:** use fixed-size structs, static ring buffers and `char[]`. No `String`, `std::vector`, `std::function` or `new`/`delete` after setup. ArduinoJson only for config import/export and the REST API.
+- **Internal RAM is scarce, and not every MCU S2 has PSRAM.** ~9 KB static headroom with WiFi linked, and WiFi needs ~40 KB free heap at runtime (below that, WPA2 connections fail silently). Permanent buffers: small and static (e.g. the log ring is 40 lines). Buffers for console commands, config edits and web requests: per call with `sysinfo::makeTemp<T>()` / `makeTempBuffer(n)` (freed automatically). Check `RAM:` in the build output and the `internal heap free` value logged when service mode opens.
+- **No heap churn on the measurement path:** use fixed-size structs, static ring buffers and `char[]`. No `String`, `std::vector`, `std::function` or `new`/`delete` after setup. ArduinoJson only for config import/export and the REST API; service-mode request handlers may use `String`/heap (the `WebServer` API needs it), the measurement path never.
 - **LMIC is owned by its own task:** all `LMIC_*` / `os_*` calls happen in the LMIC task, and everything else communicates with it through FreeRTOS queues.
 - **Time:** UTC internally (epoch seconds). Timezones only for display. Values recorded before the first time sync are flagged `Q_TIME_UNSYNCED`.
 - **Raw values are never overwritten:** calibration produces a separate `Corrected` value, and aggregation a separate `Aggregated` value. Quality checks *flag* values, they don't drop them.

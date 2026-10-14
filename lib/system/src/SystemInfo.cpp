@@ -77,6 +77,11 @@ uint32_t largestFreeBlock() { return heap_caps_get_largest_free_block(MALLOC_CAP
 void watchdogAddCurrentTask() { esp_task_wdt_add(nullptr); }
 void watchdogFeed() { esp_task_wdt_reset(); }
 
+void watchdogSetTimeout(uint32_t timeoutMs) {
+  const esp_task_wdt_config_t cfg = {timeoutMs, 0, true};  // timeout, no idle-task check, panic
+  esp_task_wdt_reconfigure(&cfg);
+}
+
 uint64_t uptimeMs() { return static_cast<uint64_t>(esp_timer_get_time() / 1000); }
 
 }  // namespace sysinfo

@@ -14,7 +14,7 @@ char g_err[96];
 
 void loadOlpe() {
   static char json[8192];
-  FILE* f = fopen("config/olpe-template.json", "rb");
+  FILE* f = fopen("test/fixtures/olpe.json", "rb");
   TEST_ASSERT_NOT_NULL(f);
   const size_t n = fread(json, 1, sizeof(json) - 1, f);
   fclose(f);
