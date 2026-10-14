@@ -20,8 +20,8 @@ PlatformIO isn't on PATH; use `~/.platformio/penv/bin/pio`.
 - `src/` composition root only (`main.cpp`) plus the serial console.
 - `lib/<module>/src/`: `core` (data model, logger, clock), `config`, `health`, `sensors` (interface + manager),
   `pipeline` (quality, calibration, aggregation), `uplinks` (Cayenne, airtime, uplink logic): all host-testable.
-  Also host-testable: `netutil` (captive DNS answers), the snapshot in `health`, `storage` (SD history/log files and janitor, behind the `FileSystem` interface).
-  Device-only: `board`, `drivers`, `system` (NVS, reset info, watchdog, boot mode, config editing), `lorawan` (LMIC), `service` (AP, web server, REST API), `sdcard` (SD card `FileSystem`); these are in `lib_ignore` of the `native` env.
+  Also host-testable: `netutil` (captive DNS answers), the snapshot in `health`, `storage` (SD history/log files and janitor, behind the `FileSystem` interface), `ota` (image checks, image marker, self-test).
+  Device-only: `board`, `drivers`, `system` (NVS, reset info, watchdog, boot mode, config editing), `lorawan` (LMIC), `service` (AP, web server, REST API), `sdcard` (SD card `FileSystem`), `updater` (OTA flash writing, rollback state); these are in `lib_ignore` of the `native` env.
 - `variants/sensebox_home_v2/`: own board variant (see gotchas).
 - `test/native/test_*`: Unity tests, one folder per area.
 
@@ -53,6 +53,7 @@ When adding a feature, check it against these five questions:
 - **`IO_ENABLE` (8) is not managed by the firmware;** the board variant switches it on at boot.
 - **Own board variant** (`variants/sensebox_home_v2`): the stock `sensebox_mcu_esp32s2` variant blocks 5 s at every boot and switches to `ota_1` if BOOT is pressed then. That would break our OTA/rollback, so we use a copy without it. Don't switch back to the stock variant.
 - **Adafruit AHTX0 busy-waits without a bound** in `getEvent()`/`begin()` (a failed status read looks like "busy" forever). The driver checks the sensor answers first; a hang there ends in a task-watchdog reset.
+- **OTA:** every image must contain the marker from `lib/ota/src/ImageMarker.cpp` (it must stay referenced at runtime, or the linker drops it) and override the core's `verifyRollbackLater()` with `extern "C"`. `scripts/check_image.py` fails the build otherwise. Overrides of Arduino core hooks always need `extern "C"`.
 - **Bootloader:** app rollback is enabled in the framework's bootloader (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`), task WDT 5 s, core dump to flash.
 - **Cayenne/openSenseMap:** the openSenseMap reads TTN's decoded payload (the TTN formatter must be set to CayenneLPP) and stamps values with the gateway receive time. So there is no LoRa backlog catch-up. A missing channel is stored as 0 on the openSenseMap (accepted for now). PM is sent as `analog_in`, clamped at 327.67.
 

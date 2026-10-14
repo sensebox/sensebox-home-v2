@@ -16,6 +16,7 @@
 #include "PersistentStore.h"
 #include "ServicePassword.h"
 #include "SystemInfo.h"
+#include "Updater.h"
 #include "Version.h"
 #include "WebUi.h"
 
@@ -39,6 +40,12 @@ struct Context {
   uint32_t lastActivityMs = 0;
   uint32_t rebootAtMs = 0;
   bool rebootPending = false;
+  updater::ImageUpload* upload = nullptr;  // only while a firmware upload runs
+  uint32_t uploadStartMs = 0;
+  uint32_t uploadLastChunkMs = 0;
+  uint32_t uploadMaxGapMs = 0;
+  size_t uploadLastLogBytes = 0;
+  updater::RunningInfo running{};
 };
 Context g;
 
@@ -102,10 +109,11 @@ void handleStatus() {
   int n = snprintf(g.response, kResponseSize,
                    "{\"mode\":\"service\",\"firmware\":\"%s\",\"service\":{\"ssid\":\"%s\",\"clients\":%u,"
                    "\"uptimeS\":%lu,\"secondsLeft\":%lu,\"apTimeoutMin\":%u,\"freeHeap\":%lu,\"minFreeHeap\":%lu},"
-                   "\"snapshot\":",
+                   "\"slot\":\"%s\",\"lastUpdateRolledBack\":%s,\"snapshot\":",
                    SBH_FW_VERSION, g.ssid, mode.clients(), static_cast<unsigned long>(sysinfo::uptimeMs() / 1000),
                    static_cast<unsigned long>(mode.secondsLeft(now)), g.options.apTimeoutMin,
-                   static_cast<unsigned long>(sysinfo::freeHeap()), static_cast<unsigned long>(sysinfo::minFreeHeap()));
+                   static_cast<unsigned long>(sysinfo::freeHeap()), static_cast<unsigned long>(sysinfo::minFreeHeap()),
+                   g.running.partition, g.running.previousRolledBack ? "true" : "false");
   size_t len = static_cast<size_t>(n);
   size_t snapLen = 0;
   if (g.options.snapshot != nullptr) {
@@ -229,6 +237,98 @@ void handleReboot() {
   g.rebootAtMs = millis() + kRebootDelayMs;  // let the response go out first
 }
 
+// The captive DNS is closed during a firmware upload: nobody answers it then (the upload blocks
+// the main loop), and queued queries would hold WiFi buffers.
+void pauseDns(bool pause) {
+  if (g.dns == nullptr) return;
+  if (pause) {
+    g.dns->stop();
+  } else {
+    g.dns->begin(53);
+  }
+}
+
+// Firmware upload, called by WebServer for every chunk of the multipart body. The whole upload
+// runs inside one handleClient() call, so the watchdog is fed here.
+void handleOtaChunk() {
+  HTTPUpload& up = g.server->upload();
+  const uint32_t now = millis();
+  g.lastActivityMs = now;
+  sysinfo::watchdogFeed();
+  switch (up.status) {
+    case UPLOAD_FILE_START:
+      delete g.upload;
+      g.upload = new (std::nothrow) updater::ImageUpload();
+      g.uploadStartMs = now;
+      g.uploadLastLogBytes = 0;
+      g.uploadLastChunkMs = now;
+      g.uploadMaxGapMs = 0;
+      sysinfo::breadcrumb("ota:upload");  // shows up after a reset in the middle of the upload
+      pauseDns(true);
+      LOGI(kTag, "firmware upload started: %s, heap free %lu, largest block %lu", up.filename.c_str(),
+           static_cast<unsigned long>(sysinfo::freeHeap()), static_cast<unsigned long>(sysinfo::largestFreeBlock()));
+      if (g.upload != nullptr) g.upload->begin(g.options.boardRevision);
+      break;
+    case UPLOAD_FILE_WRITE: {
+      const uint32_t gap = now - g.uploadLastChunkMs;
+      if (gap > g.uploadMaxGapMs) g.uploadMaxGapMs = gap;
+      g.uploadLastChunkMs = now;
+      if (g.upload != nullptr) g.upload->write(up.buf, up.currentSize);
+      if (up.totalSize - g.uploadLastLogBytes >= 128u * 1024u) {
+        g.uploadLastLogBytes = up.totalSize;
+        LOGI(kTag, "upload %lu KB, %lu KB/s, heap %lu/min %lu, max pause %lu ms",
+             static_cast<unsigned long>(up.totalSize / 1024),
+             static_cast<unsigned long>(up.totalSize / (now - g.uploadStartMs + 1)),
+             static_cast<unsigned long>(sysinfo::freeHeap()), static_cast<unsigned long>(sysinfo::minFreeHeap()),
+             static_cast<unsigned long>(g.uploadMaxGapMs));
+      }
+      break;
+    }
+    case UPLOAD_FILE_END:
+      if (g.upload != nullptr && !g.upload->failed()) g.upload->end();
+      sysinfo::breadcrumb("service");
+      pauseDns(false);
+      break;
+    case UPLOAD_FILE_ABORTED:
+      // WebServer aborts when the client disconnects or sends nothing for 5 s.
+      LOGW(kTag, "upload aborted at %lu KB (disconnected/5 s no data); heap %lu/min %lu, max pause %lu ms",
+           static_cast<unsigned long>(up.totalSize / 1024),
+           static_cast<unsigned long>(sysinfo::freeHeap()), static_cast<unsigned long>(sysinfo::minFreeHeap()),
+           static_cast<unsigned long>(g.uploadMaxGapMs));
+      if (g.upload != nullptr) g.upload->abort();
+      sysinfo::breadcrumb("service");
+      pauseDns(false);
+      break;
+  }
+}
+
+// Called after the upload: answers and, on success, restarts into the new firmware.
+void handleOtaDone() {
+  auto buf = beginRequest();
+  if (outOfMemory(buf)) return;
+  if (g.upload == nullptr) {
+    sendResult(false, "no firmware file received (or out of memory)");
+    return;
+  }
+  const bool ok = !g.upload->failed() && g.upload->written() > 0;
+  if (!ok) {
+    LOGW(kTag, "firmware update refused: %s", g.upload->error());
+    sendResult(false, g.upload->failed() ? g.upload->error() : "empty file");
+  } else {
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["version"] = g.upload->newVersion();
+    doc["bytes"] = g.upload->written();
+    const size_t len = serializeJson(doc, g.response, kResponseSize);
+    sendJson(200, g.response, len);
+    LOGI(kTag, "restarting into firmware %s", g.upload->newVersion());
+    g.rebootPending = true;
+    g.rebootAtMs = millis() + kRebootDelayMs;
+  }
+  delete g.upload;
+  g.upload = nullptr;
+}
+
 // Captive portal: phones/laptops probe URLs like /generate_204 or /hotspot-detect.html.
 // Redirecting everything unknown to the start page makes the OS open the web UI by itself.
 void handleNotFound() {
@@ -257,6 +357,7 @@ void buildSsid(const char* serial) {
 
 bool ServiceMode::begin(const Options& options) {
   g.options = options;
+  g.running = updater::bootInfo();
   buildSsid(options.deviceSerial);
 
   char password[servicepw::kMaxLen + 1];
@@ -288,6 +389,7 @@ bool ServiceMode::begin(const Options& options) {
   g.server->on("/api/config/field", HTTP_POST, handlePostField);
   g.server->on("/api/appkey", HTTP_POST, handlePostAppKey);
   g.server->on("/api/reboot", HTTP_POST, handleReboot);
+  g.server->on("/api/ota", HTTP_POST, handleOtaDone, handleOtaChunk);
   g.server->onNotFound(handleNotFound);
   g.server->begin();
 

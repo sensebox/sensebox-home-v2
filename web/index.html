@@ -15,6 +15,7 @@ td,th{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);vertic
 input,textarea{width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:14px ui-monospace,Menlo,Consolas,monospace}
 textarea{min-height:220px}.row{display:flex;gap:8px}.row input{flex:1}
 button{padding:7px 14px;border:1px solid var(--acc);border-radius:6px;background:var(--acc);color:#fff;font-size:14px;cursor:pointer}
+progress{width:100%;height:14px;margin-top:8px}
 button.sec{background:transparent;color:var(--acc)}.msg{font-size:13px;margin-top:6px;min-height:1.2em}
 pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 .saved{border:2px dashed var(--mute);border-radius:10px;padding:12px 12px 0;margin-bottom:14px;background:repeating-linear-gradient(135deg,transparent 0 12px,var(--line) 12px 13px)}
@@ -54,6 +55,15 @@ Settings changed here apply after the restart. Service mode closes after <b id="
 <div class="row" style="margin-top:8px"><button id="saveCfg">Save configuration</button><button class="sec" id="loadCfg">Reload</button></div>
 <div class="msg" id="cfgMsg"></div></section>
 
+<section><h2>Firmware update<span class="live">LIVE</span></h2>
+<p style="margin:0 0 8px">Running <b id="fwVersion">-</b> from slot <b id="fwSlot">-</b>.<span id="fwRolledBack"></span>
+Choose a <code>firmware.bin</code> of the senseBox:home v2 firmware. Settings and stored data are kept.</p>
+<div class="row"><input type="file" id="fwFile" accept=".bin"><button id="fwUpload">Install</button></div>
+<progress id="fwProgress" max="100" value="0" hidden></progress>
+<div class="msg" id="fwMsg"></div>
+<p style="margin:8px 0 0;font-size:13px;color:var(--mute)">After the upload the box restarts into the new firmware and checks it for
+2 minutes. If it crashes or rejects the configuration in that time, the box goes back to the previous firmware by itself.</p></section>
+
 <section><h2>Log during service mode<span class="live">LIVE</span></h2><pre id="logNow"></pre><div style="margin-top:8px"><button class="sec" id="loadLog">Reload</button></div></section>
 </main>
 <script>
@@ -70,6 +80,7 @@ function show(el,res,okText){el.textContent=res.ok?okText:'Error: '+res.error;el
 function savedWhen(st){const s=st.snapshot;if(!s)return;const ago='about '+dur(st.service.uptimeS)+' ago';
  $('savedWhen').textContent=s.utc?'at '+new Date(s.utc*1000).toLocaleString()+' ('+ago+')':ago;}
 async function loadStatus(){const st=await api('/api/status');$('left').textContent=dur(st.service.secondsLeft);$('fw').textContent='firmware '+st.firmware+' · WiFi '+st.service.ssid;
+ $('fwVersion').textContent=st.firmware;$('fwSlot').textContent=st.slot||'-';$('fwRolledBack').textContent=st.lastUpdateRolledBack?' An earlier update was rolled back. ':' ';
  const s=st.snapshot;if(!s){$('savedWhen').textContent='- none available';grid($('overview'),[['Status','no saved status (service mode was not started with the button)']]);return;}
  savedWhen(st);
  $('title').textContent='senseBox:home '+(s.station||'');
@@ -91,5 +102,16 @@ $('saveCfg').onclick=async()=>{let txt=$('cfg').value;try{txt=JSON.stringify(JSO
  const res=await api('/api/config',txt);show($('cfgMsg'),res,'Saved. Restart to apply.');if(res.ok)loadConfig();};
 $('loadCfg').onclick=loadConfig;$('loadLog').onclick=loadLog;
 $('reboot').onclick=async()=>{if(!confirm('Restart into normal mode? The WiFi access point closes.'))return;await api('/api/reboot',{});$('rebootMsg').textContent='Restarting. You can close this page.';};
-loadStatus();loadConfig();loadLog();setInterval(()=>api('/api/status').then(st=>{$('left').textContent=dur(st.service.secondsLeft);savedWhen(st);}).catch(()=>{}),30000);
+$('fwUpload').onclick=()=>{const f=$('fwFile').files[0],msg=$('fwMsg'),bar=$('fwProgress');
+ if(!f){msg.textContent='Choose a firmware file first.';return;}
+ if(!confirm('Install '+f.name+' ('+Math.round(f.size/1024)+' KB)? The box restarts afterwards.'))return;
+ const fd=new FormData();fd.append('firmware',f,f.name);const x=new XMLHttpRequest();
+ x.upload.onprogress=e=>{if(e.lengthComputable){bar.value=Math.round(100*e.loaded/e.total);msg.textContent='Uploading… '+bar.value+' %';}};
+ x.onload=()=>{let r={};try{r=JSON.parse(x.responseText);}catch(e){}
+  if(r.ok){bar.value=100;msg.textContent='Firmware '+(r.version||'')+' installed. The box restarts now and checks it for 2 minutes; this page stops working.';}
+  else{bar.hidden=true;msg.textContent='Not installed: '+(r.error||('HTTP '+x.status));$('fwUpload').disabled=false;}uploading=false;};
+ x.onerror=()=>{uploading=false;msg.textContent='Upload failed (connection lost at '+bar.value+' %). Nothing was changed; try again. The serial log of the box shows the reason.';bar.hidden=true;$('fwUpload').disabled=false;};
+ uploading=true;$('fwUpload').disabled=true;bar.hidden=false;bar.value=0;msg.textContent='Uploading…';x.open('POST','/api/ota');x.send(fd);};
+let uploading=false;  // the box serves one connection at a time: no polling during an upload
+loadStatus();loadConfig();loadLog();setInterval(()=>{if(uploading)return;api('/api/status').then(st=>{$('left').textContent=dur(st.service.secondsLeft);savedWhen(st);}).catch(()=>{});},30000);
 </script></body></html>

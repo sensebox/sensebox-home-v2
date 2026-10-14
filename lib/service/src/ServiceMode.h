@@ -20,6 +20,8 @@
 //   POST /api/config/field  {"field":"name"|"uplinks.devEui"|"uplinks.joinEui","value":"..."}
 //   POST /api/appkey        {"appKey":"<32 hex>"}  (write-only)
 //   POST /api/reboot        restart into normal mode
+//   POST /api/ota           firmware update: multipart/form-data with the .bin file (any field
+//                           name); on success the box restarts into the new firmware
 
 class ServiceMode {
  public:
@@ -27,6 +29,7 @@ class ServiceMode {
     const config::StationConfig* running = nullptr;
     const StatusSnapshot* snapshot = nullptr;  // nullptr if no valid snapshot
     const char* deviceSerial = "";             // for the SSID; MAC is used if empty
+    const char* boardRevision = "";            // hardware revision, checked against OTA images
     uint16_t apTimeoutMin = 15;
   };
 

@@ -10,6 +10,7 @@
 #include "PersistentStore.h"
 #include "ServicePassword.h"
 #include "SystemInfo.h"
+#include "Updater.h"
 #include "Version.h"
 
 namespace {
@@ -119,6 +120,7 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     // (the service-mode request being one-shot) also ends service mode.
     persist::saveUnhealthyBoots(0);
     app_.storage.flushNow(nowMs);  // don't lose the last seconds of log/measurements
+    if (app_.selfTest.running()) Serial.println("note: the new firmware hasn't passed its self-test yet, so it is rolled back");
     Serial.println(app_.serviceMode ? "rebooting into normal mode" : (app_.safeMode ? "rebooting, leaving safe mode" : "rebooting"));
     Serial.flush();
     delay(100);
@@ -135,6 +137,14 @@ void SerialConsole::printStatus(uint32_t nowMs) {
                 sysinfo::previousBreadcrumb()[0] ? ", last at " : "", sysinfo::previousBreadcrumb());
   Serial.printf("heap: free %lu, min %lu, largest block %lu\n", static_cast<unsigned long>(sysinfo::freeHeap()),
                 static_cast<unsigned long>(sysinfo::minFreeHeap()), static_cast<unsigned long>(sysinfo::largestFreeBlock()));
+  const updater::RunningInfo fw = updater::bootInfo();
+  Serial.printf("firmware slot: %s", fw.partition);
+  if (app_.selfTest.running()) {
+    Serial.printf(", NEW FIRMWARE: self-test running (%lu s left; restarting before that rolls back)",
+                  static_cast<unsigned long>(app_.selfTest.secondsLeft(nowMs)));
+  }
+  if (fw.previousRolledBack) Serial.print(", an earlier update was rolled back");
+  Serial.println();
 
   if (app_.serviceMode) {
     // Sensors and LoRaWAN don't run; show the status saved before the restart.

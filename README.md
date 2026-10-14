@@ -122,6 +122,7 @@ Press BOOT only *after* the box has started. Held during power-on or reset, it p
 - settings: station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
 - the complete config as JSON, to edit
 - the log before and during service mode
+- **firmware update**, see [Firmware update (OTA)](#firmware-update-ota)
 - a **Restart into normal mode** button
 
 Changes are stored immediately and take effect after the restart.
@@ -145,8 +146,33 @@ The web page uses a small REST API, which tools can use too:
 | `POST /api/config/field` | `{"field": "name" \| "uplinks.devEui" \| "uplinks.joinEui", "value": "…"}` |
 | `POST /api/appkey` | `{"appKey": "<32 hex digits>"}` |
 | `POST /api/reboot` | restart into normal operation |
+| `POST /api/ota` | firmware update: the `.bin` file as `multipart/form-data`, e.g. `curl -F firmware=@firmware.bin http://192.168.4.1/api/ota` |
 
 All answers are JSON; errors come as `{"ok": false, "error": "…"}`.
+
+### Firmware update (OTA)
+
+The firmware can be updated over WiFi in service mode, without a USB cable. Settings, keys and the data on the SD card are kept.
+
+1. Build the firmware: `pio run -e mcu_s2`. The file is `.pio/build/mcu_s2/firmware.bin`.
+2. Open service mode, go to **Firmware update**, choose the file and press **Install**.
+
+The box writes the new firmware into its second firmware slot while it uploads. The old firmware stays untouched in the other slot.
+
+**Checked before switching:**
+- **Is it firmware for this board?** It must be an ESP32-S2 image.
+- **Is it this firmware?** Every senseBox:home v2 build contains a marker, `@@SBH2-IMAGE@@ fw=<version> hw=<revisions>;`. A Blockly sketch or another program is refused.
+- **Does it fit the hardware revision?** The board's revision comes from its device identity; every revision is accepted while none is provisioned. The build flag `SBH_HW_COMPAT` sets the list, default `*` = any.
+- **Is the image complete and undamaged?** Checked via its checksum and hash.
+
+If any check fails, the update is refused with a message and nothing changes.
+
+**After the upload** the box restarts into the new firmware, which first has to prove itself. It is kept once it has run normally for **2 minutes**. The box goes back to the previous firmware by itself if, before that:
+- it crashes or hangs (watchdog),
+- it rejects the configuration (e.g. a failed migration), or
+- it is restarted in any way.
+
+During these 2 minutes `status` shows `NEW FIRMWARE: self-test running`, and the BOOT button doesn't open service mode, because the restart would roll the update back. After a rollback, `status` and the web page say that an earlier update was rolled back.
 
 ---
 
@@ -392,5 +418,7 @@ PlatformIO environments:
 | `mcu_s2` | Release firmware. |
 | `mcu_s2_dev` | Debug logging; uses [config/olpe-template.json](config/olpe-template.json) when no config is stored. |
 | `native` | Unit tests on the PC: `pio test -e native` |
+
+Every device build ends with `scripts/check_image.py`, which fails the build if the OTA image marker or the rollback hook is missing from the image.
 
 Code layout and the rules for contributing are in [implementation-docs/CLAUDE.md](implementation-docs/CLAUDE.md).

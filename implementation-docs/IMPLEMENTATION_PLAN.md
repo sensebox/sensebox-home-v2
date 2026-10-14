@@ -60,7 +60,9 @@ Done (builds for the MCU S2; 46 native unit tests pass; **not yet run on hardwar
 
 - Phase 3, SD card (2026-10-14; not yet run on hardware): measurement history (CSV) and log files per boot, buffered writes, unmount/power-cycle/retry on errors, hot-plug, janitor with watermarks, log cap and retention (`lib/storage`, `lib/sdcard`, §4.5). Not done: RAM record store and uplink outbox (only needed for a catch-up uplink, i.e. HTTP in phase 8), file download in service mode.
 
-Not done yet: phase 6 (OTA), phase 7, `tools/` scripts, on-device tests.
+- Phase 6, OTA (2026-10-15; not yet run on hardware): upload in service mode (web UI, `POST /api/ota`), streamed into the other app slot; checks: ESP32-S2 image, image marker (this firmware), hardware revision, image hash; self-test (2 min normal operation + config accepted) with automatic rollback (`lib/ota`, `lib/updater`, §4.9). Not done (decision 2026-10-15): signatures, anti-downgrade.
+
+Not done yet: phase 7, `tools/` scripts, on-device tests.
 
 Findings during implementation:
 - The stock `sensebox_mcu_esp32s2` board variant blocks 5 s at boot and switches the boot partition to `ota_1` if BOOT is pressed. With our partition table that would bypass OTA rollback, so the firmware uses its own variant (`variants/sensebox_home_v2`) without it.
@@ -414,7 +416,15 @@ Also new compared to home v1: the MCU S2 has a radio **reset** pin (38) and a po
 
 ### 4.9 OTA with rollback and compatibility check
 - **Path for Olpe:** upload through the service-mode web UI. OTA over LoRaWAN is not realistic with the bandwidth and duty cycle. Remote OTA over WiFi (pull from a release server) is phase 8.
-- **Image metadata:** a custom descriptor struct in the app image holds the firmware version, a **list of compatible hardware revisions**, the minimum config schema version and the signature info. Before switching the boot partition, `OtaManager` checks:
+- **Implemented (2026-10-15)** — signatures and anti-downgrade are deferred (decision 2026-10-15):
+  - **Upload:** service mode, web UI or `POST /api/ota` (multipart). It is streamed with `esp_ota_write` (sequential erase) into the inactive slot.
+  - **Image marker instead of a descriptor struct:** every build contains the text marker `@@SBH2-IMAGE@@ fw=<version> hw=<list>;` (`lib/ota/src/ImageMarker.cpp`, `SBH_HW_COMPAT` build flag). The upload scans the stream for it (KMP scanner, chunk-independent).
+  - **Checks, all before the boot partition is switched:** ESP32-S2 image header; marker present (otherwise "not a senseBox:home v2 firmware"); board hardware revision (from `factory_id`) in `hw`, any revision accepted while unknown; `esp_ota_end()` hash check.
+  - **Self-test (`SelfTest.h`):** keep the image after 2 min of normal operation with the config accepted. Config rejected → explicit rollback; crash/watchdog/any restart before that → the bootloader rolls back. Sensors are deliberately not part of it, so a box with a broken sensor can still be updated.
+  - **During the self-test:** the BOOT button doesn't enter service mode (that restart would roll back).
+  - **Arduino hook:** the core's `verifyRollbackLater()` is overridden (`extern "C"`!).
+  - **Build check:** `scripts/check_image.py` fails the build if the marker or the hook override is missing. Both had been silently missing in a first build: the marker was dropped by the linker, and the hook had C++ linkage.
+- *Original design:* **Image metadata:** a custom descriptor struct in the app image holds the firmware version, a **list of compatible hardware revisions**, the minimum config schema version and the signature info. Before switching the boot partition, `OtaManager` checks:
   1. the signature
   2. that the current hardware revision (from `factory_id`) is in the list
   3. that the image is not older than `minAllowedVersion` (anti-downgrade, configurable)
@@ -758,7 +768,9 @@ Every phase ends with something running on real hardware. Phases 0–7 make up t
 - **Exit:** a non-developer can set up LoRa keys and diagnose a pulled sensor from a phone, without a laptop.
 
 ### Phase 6: OTA
-- [ ] OtaManager via web upload, image descriptor with HW compatibility list, signature verification, self-test + rollback, anti-downgrade
+- [x] OTA via web upload, image marker with HW compatibility list, self-test + rollback (2026-10-15)
+- [ ] Test on hardware: update app0 → app1 → app0, a deliberately crashing image rolls back, a foreign .bin is refused, config and SD data survive
+- [ ] Signature verification, anti-downgrade (deferred, decision 2026-10-15)
 - [ ] `tools/sign_firmware.py`, release process in CI
 - **Exit:** a deliberately broken image rolls back by itself, an incompatible image is refused, and config survives the update.
 
