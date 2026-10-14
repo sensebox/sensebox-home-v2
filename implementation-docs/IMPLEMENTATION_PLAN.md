@@ -58,7 +58,9 @@ Done (builds for the MCU S2; 46 native unit tests pass; **not yet run on hardwar
 
 - Phase 5, service mode (2026-10-14; not yet run on hardware): separate boot mode entered with a 3 s BOOT press, status snapshot in RTC memory, WPA2 access point with captive DNS, embedded web UI (status before service mode, settings incl. write-only AppKey, config JSON, logs, restart), REST API `/api/...`, inactivity timeout, `service-password` console command. Not done: auto-start when unconfigured or in safe mode, sensor check, diagnostic report download, browser time → clock. WebSocket live values are dropped: nothing is measured in service mode.
 
-Not done yet: phase 3 (SD storage, janitor), phase 6 (OTA), phase 7, `tools/` scripts, on-device tests.
+- Phase 3, SD card (2026-10-14; not yet run on hardware): measurement history (CSV) and log files per boot, buffered writes, unmount/power-cycle/retry on errors, hot-plug, janitor with watermarks, log cap and retention (`lib/storage`, `lib/sdcard`, §4.5). Not done: RAM record store and uplink outbox (only needed for a catch-up uplink, i.e. HTTP in phase 8), file download in service mode.
+
+Not done yet: phase 6 (OTA), phase 7, `tools/` scripts, on-device tests.
 
 Findings during implementation:
 - The stock `sensebox_mcu_esp32s2` board variant blocks 5 s at boot and switches the boot partition to `ota_1` if BOOT is pressed. With our partition table that would bypass OTA rollback, so the firmware uses its own variant (`variants/sensebox_home_v2`) without it.
@@ -251,8 +253,14 @@ class IRecordStore {                    // append-only log of Measurement record
   virtual uint8_t read(uint32_t fromSeq, Measurement* out, uint8_t max) = 0;
 };
 ```
-- **SdRecordStore**: one binary append-only file per day (`/data/2026/10/2026-10-09.bin`, one folder per year and month so no single FAT directory gets huge) plus a human-readable CSV export path for the web UI. It writes with a fixed record size, so random access by sequence number works without parsing.
-- **RamRecordStore**: a ring buffer sized at boot: large if PSRAM is available, only a few hundred records (a few KB) without PSRAM, since internal RAM is needed for WiFi. It is used when no SD card is present or the card fails. The box keeps working; data is buffered only for a limited time, and the web UI shows a warning.
+- **Implemented (2026-10-14), differing from the first design below:** `SdStore` (`lib/storage`) writes **CSV text**, not binary records, and names files by **boot number and part** instead of by date (`/data/B000042-0001.csv`, `/logs/B000042-0001.log`; new part after 4 MB / 1 MB):
+  - **Why not by date:** without RTC the date is unknown until the first LoRaWAN time sync, but recording must start at boot. Lines before the sync carry `uptime_s`, and a `# time synced` marker line allows converting them later.
+  - **Why CSV:** readable without tools, and still small enough (~0.6 MB/day for Olpe).
+  - **Writing:** buffered in RAM (2 KB measurements, 2 × 1 KB log, double-buffered so logging never waits for the card) and flushed every 15 s.
+  - **Errors:** a write error unmounts the card, powers it off (`SD_ENABLE`) and retries with backoff; hot-plug is covered by the same retry.
+  - **Separation:** the card is used in normal operation only. The file-system access is behind `FileSystem` (`lib/storage/src/FileSystem.h`; device implementation `lib/sdcard`, POSIX/VFS under `/sd`, own SPI bus HSPI), so the whole logic is host-tested with an in-memory card.
+- *First design (not implemented):* **SdRecordStore**: one binary append-only file per day (`/data/2026/10/2026-10-09.bin`, one folder per year and month so no single FAT directory gets huge) plus a human-readable CSV export path for the web UI. It writes with a fixed record size, so random access by sequence number works without parsing.
+- *Not implemented:* **RamRecordStore**: without PSRAM only a few hundred records fit; the SD write buffer bridges short outages, and LoRaWAN doesn't catch up anyway (§6.2).
 - **Outbox:** each uplink keeps its own **cursor** (last acknowledged sequence number), persisted in NVS (written rarely, e.g. every N records, to protect flash). After a reconnect the uplink catches up from its cursor. This gives store-and-forward per target, and several targets can run independently at different speeds.
 - **SD full:** see §4.5.1.
 - **Hot-plug:** SD presence is re-checked periodically. A missing card produces a warning, not a failure.
@@ -264,14 +272,23 @@ class IRecordStore {                    // append-only log of Measurement record
 - 6 values/min × ~20 B per record ≈ 175 KB/day ≈ **65 MB/year** of raw data, plus aggregates and logs
 - a 4 GB card would last decades, but a misbehaving logger, a future 1 s-interval sensor or a smaller replacement card must not fill it up and stop recording
 
-**What the SD card holds:**
+**What the SD card holds (as implemented):**
 
 | Area | Path | Own cap |
 |---|---|---|
-| Measurements | `/data/YYYY/MM/*.bin` | none; it may use the space the other areas leave |
-| Unsynced records | `/data/unsynced/` | 50 MB (oldest deleted first) |
-| Logs | `/logs/` | 100 MB (rotating daily files; oldest deleted first) |
-| Diagnostic report snapshots | `/diag/` | 10 MB |
+| Measurements | `/data/B<boot>-<part>.csv` | none; it may use the space the logs leave |
+| Logs | `/logs/B<boot>-<part>.log` | 10 % of the card, max. 100 MB (counted in 1 MB files; oldest deleted first) |
+
+**Implemented janitor (`lib/storage/src/Janitor.h`):**
+- **Watermarks:** below `lowWatermarkPct` free (default 10 %) it deletes until `highWatermarkPct` (20 %) is free: logs first, then measurement files, oldest first by name.
+- **90 % is a hard limit (decision 2026-10-14):** the card may be filled up to 90 % (`lowWatermarkPct` 10); above that the oldest file is deleted whatever its age.
+- **Retention:** measurement files younger than `minRetentionDays` (by FAT timestamp, known only for files written after a time sync) are only protected from the further cleanup between 90 % and 80 %.
+- **Never deleted:** current files and files not matching the naming scheme.
+- **Over the limit:** if nothing is deletable above 90 %, health shows `card over 90 % full`.
+- **Schedule:** runs at mount and every 10 min; while cleaning, one file every 200 ms.
+- **Cheap scan:** the directory scan reads names only (one `readdir` pass, no `stat` per file), so it stays fast with ~1000 files.
+
+The original design follows for reference.
 
 **Watermarks on the whole card:**
 - **Low watermark:** free space < 10 % of the card or < 200 MB, whichever is larger. When reached, the `SdJanitor` deletes the **oldest whole day files**: logs first, then measurement files. It stops at the high watermark.
@@ -720,7 +737,9 @@ Every phase ends with something running on real hardware. Phases 0–7 make up t
 - **Exit:** unplugging or replugging any sensor at runtime doesn't stop the others, and a re-plugged sensor recovers automatically.
 
 ### Phase 3: Storage
-- [ ] RamRecordStore, SdRecordStore (daily files, hot-plug, SD power-cycle recovery), `SdJanitor` overflow protection (§4.5.1), Outbox with persisted cursors
+- [x] SD history + log files, hot-plug, SD power-cycle recovery, janitor overflow protection (§4.5, §4.5.1) (2026-10-14)
+- [ ] Test on hardware: 24 h with card pulled/reinserted, a card filled to the low watermark, mount time of a full 4 GB card (watchdog: 5 s)
+- [ ] Outbox with persisted cursors (only with a catch-up uplink, phase 8)
 - **Exit:** a 24 h run with the SD card pulled and reinserted shows no gaps for the time the card was present, and the RAM buffer covers the outage.
 
 ### Phase 4: LoRaWAN Cayenne uplink

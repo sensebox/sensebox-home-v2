@@ -118,6 +118,7 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     // A requested reboot is a normal start: it never counts as a crash, ends safe mode, and
     // (the service-mode request being one-shot) also ends service mode.
     persist::saveUnhealthyBoots(0);
+    app_.storage.flushNow(nowMs);  // don't lose the last seconds of log/measurements
     Serial.println(app_.serviceMode ? "rebooting into normal mode" : (app_.safeMode ? "rebooting, leaving safe mode" : "rebooting"));
     Serial.flush();
     delay(100);
@@ -179,6 +180,22 @@ void SerialConsole::printStatus(uint32_t nowMs) {
                 static_cast<unsigned long>(ls.joinAttempts), static_cast<unsigned long>(ls.uplinks),
                 static_cast<unsigned long>(ls.downlinks), ls.spreadingFactor, ls.lastRssi, ls.lastSnr,
                 static_cast<long>(ls.budgetMs));
+
+  const SdStore::Status sd = app_.storage.status();
+  if (!sd.enabled) {
+    Serial.println("sd: off in config");
+  } else if (!sd.mounted) {
+    Serial.println("sd: no card / not mounted (see the 'sd' health line)");
+  } else {
+    Serial.printf("sd: %s, %lu of %lu MB free, writing %s and %s\n", sd.full ? "FULL" : "ok",
+                  static_cast<unsigned long>(sd.freeBytes >> 20), static_cast<unsigned long>(sd.totalBytes >> 20),
+                  sd.dataFile, sd.logFile);
+  }
+  if (sd.enabled) {
+    Serial.printf("    files deleted %lu, write errors %lu, dropped measurements %lu, dropped log lines %lu\n",
+                  static_cast<unsigned long>(sd.filesDeleted), static_cast<unsigned long>(sd.writeErrors),
+                  static_cast<unsigned long>(sd.droppedMeasurements), static_cast<unsigned long>(sd.droppedLogLines));
+  }
 }
 
 // Prints the stored config (what applies after the next reboot) and says whether it differs

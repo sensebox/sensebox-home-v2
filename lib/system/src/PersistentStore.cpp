@@ -99,6 +99,14 @@ void saveUnhealthyBoots(uint8_t value) {
   if (ns.ok()) ns->putUChar("unhealthy", value);
 }
 
+uint32_t nextBootId() {
+  Ns ns(kSysNs, false);
+  if (!ns.ok()) return 0;
+  const uint32_t id = ns->getULong("boot_id", 0) + 1;
+  ns->putULong("boot_id", id);
+  return id;
+}
+
 bool loadIdentity(DeviceIdentity& out) {
   out = DeviceIdentity{};
   Ns ns(kFactoryNs, true, kFactoryPartition);

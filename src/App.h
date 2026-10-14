@@ -3,6 +3,7 @@
 #include "Clock.h"
 #include "Health.h"
 #include "LmicTransport.h"
+#include "SdStore.h"
 #include "SensorManager.h"
 #include "StationConfig.h"
 
@@ -13,6 +14,7 @@ struct App {
   config::StationConfig& config;
   SensorManager& sensors;
   LmicTransport& lora;
+  SdStore& storage;
   bool safeMode;
   bool serviceMode;  // sensors and LoRaWAN are not running; see BootMode.h
 };

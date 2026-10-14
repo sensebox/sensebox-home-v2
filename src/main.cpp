@@ -22,9 +22,12 @@
 #include "Log.h"
 #include "PersistentStore.h"
 #include "Pipeline.h"
+#include "SdCardFs.h"
+#include "SdStore.h"
 #include "SensorManager.h"
 #include "SerialConsole.h"
 #include "ServiceMode.h"
+#include "SinkFanout.h"
 #include "StationConfig.h"
 #include "StatusCapture.h"
 #include "StatusLed.h"
@@ -78,11 +81,14 @@ Pipeline g_pipeline(g_config);
 SensorManager g_sensors(g_clock, g_health, g_pipeline);
 LmicTransport g_lora(g_clock, g_health);
 CayenneUplink* g_cayenne = nullptr;  // created at setup if configured
+SdCardFs g_sdCard;
+SdStore g_sd(g_sdCard, g_clock, g_health);
+SinkFanout g_windowMeans;  // 10-min means of the uplink: log + SD card
 
 StatusLed g_led;
 ButtonDetector g_button;
 BootGuard g_bootGuard;
-App g_app{g_clock, g_health, g_config, g_sensors, g_lora, false, false};
+App g_app{g_clock, g_health, g_config, g_sensors, g_lora, g_sd, false, false};
 SerialConsole g_console(g_app);
 ServiceMode g_service;
 
@@ -160,7 +166,7 @@ void startUplinks() {
     memset(appKey, 0, sizeof(appKey));
 
     g_cayenne = new CayenneUplink(g_config, u.lorawan, g_clock, g_health, g_lora);
-    g_cayenne->setAggregateSink(&g_measurementLog);
+    g_cayenne->setAggregateSink(&g_windowMeans);
     g_cayenne->begin(millis());
     g_pipeline.addSink(g_cayenne);
   }
@@ -178,6 +184,7 @@ void periodicStatusLog(uint32_t nowMs) {
 // Saves the status of normal operation and restarts into service mode (plan §4.8).
 void enterServiceMode(uint32_t nowMs) {
   LOGI(kTag, "restarting into service mode");
+  g_sd.flushNow(nowMs);
   captureStatus(g_app, g_latest, nowMs, bootmode::snapshot());
   bootmode::requestServiceMode();
   Serial.flush();
@@ -261,11 +268,25 @@ void setup() {
     LOGE(kTag, "fix the cause (e.g. config-set), then 'reboot' to leave safe mode");
     g_led.setMode(StatusLed::Mode::SafeMode);
   } else {
+    // SD card first, so the boot log is on the card. The sink is registered before begin():
+    // lines logged during the mount go straight into the SD buffer.
+    sysinfo::breadcrumb("setup:sd");
+    SdStore::Options sdOptions;
+    sdOptions.bootId = persist::nextBootId();
+    sdOptions.storage = g_config.storage;
+    sdOptions.firmware = SBH_FW_VERSION;
+    sdOptions.station = g_config.name;
+    logger::addSink(&g_sd);
+    g_sd.begin(sdOptions, millis());
+
     sysinfo::breadcrumb("setup:sensors");
     board::initSensorBus();
     logSensorBus();
     g_pipeline.addSink(&g_measurementLog);
     g_pipeline.addSink(&g_latest);
+    g_pipeline.addSink(&g_sd);  // raw and corrected values
+    g_windowMeans.add(&g_measurementLog);
+    g_windowMeans.add(&g_sd);
     g_sensors.configure(g_config, drivers::table(), drivers::count());
     g_sensors.begin(millis());
 
@@ -297,6 +318,7 @@ void loop() {
     g_sensors.tick(nowMs);
     g_lora.poll(nowMs);
     if (g_cayenne != nullptr) g_cayenne->tick(nowMs);
+    g_sd.tick(nowMs);
   }
   if (g_bootGuard.tick(nowMs)) {
     persist::saveUnhealthyBoots(0);

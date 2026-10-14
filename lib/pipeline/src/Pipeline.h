@@ -11,7 +11,7 @@
 
 class Pipeline : public MeasurementSink {
  public:
-  static constexpr size_t kMaxSinks = 4;
+  static constexpr size_t kMaxSinks = 6;
 
   // `cfg` must outlive the pipeline (it is the global station config).
   explicit Pipeline(const config::StationConfig& cfg) : cfg_(cfg) {}

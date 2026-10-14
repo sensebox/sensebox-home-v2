@@ -20,8 +20,8 @@ PlatformIO isn't on PATH; use `~/.platformio/penv/bin/pio`.
 - `src/` composition root only (`main.cpp`) plus the serial console.
 - `lib/<module>/src/`: `core` (data model, logger, clock), `config`, `health`, `sensors` (interface + manager),
   `pipeline` (quality, calibration, aggregation), `uplinks` (Cayenne, airtime, uplink logic): all host-testable.
-  Also host-testable: `netutil` (captive DNS answers), the snapshot in `health`.
-  Device-only: `board`, `drivers`, `system` (NVS, reset info, watchdog, boot mode, config editing), `lorawan` (LMIC), `service` (AP, web server, REST API); these are in `lib_ignore` of the `native` env.
+  Also host-testable: `netutil` (captive DNS answers), the snapshot in `health`, `storage` (SD history/log files and janitor, behind the `FileSystem` interface).
+  Device-only: `board`, `drivers`, `system` (NVS, reset info, watchdog, boot mode, config editing), `lorawan` (LMIC), `service` (AP, web server, REST API), `sdcard` (SD card `FileSystem`); these are in `lib_ignore` of the `native` env.
 - `variants/sensebox_home_v2/`: own board variant (see gotchas).
 - `test/native/test_*`: Unity tests, one folder per area.
 
@@ -48,7 +48,7 @@ When adding a feature, check it against these five questions:
 ## Hardware facts and gotchas
 - **Sensor I2C** is QWIIC on SDA 39 / SCL 40, at 100 kHz (the SPS30 limit). AM2315C is at `0x38`, SPS30 at `0x69`.
 - **LoRa-Bee in XB1:** CS 34, RESET 38, power 41. DIO0 and DIO1 are **both on INT 33** (same as the v1 LMIC pin map).
-- **SD card** has its own SPI bus (CS 10, MOSI 11, SCK 12, MISO 13) and a power switch on pin 9.
+- **SD card** has its own SPI bus (HSPI: CS 10, MOSI 11, SCK 12, MISO 13) and a power switch on pin 9 (`SD_ENABLE`, LOW = on, as in the official MCU-S2 examples). Used in normal operation only; all SD access from the main loop.
 - **Service mode is the BOOT button (GPIO0), pressed ≥ 3 s while running.** GPIO0 is a strapping pin: held during reset, it enters download mode. Input with pull-up only, never drive it.
 - **`IO_ENABLE` (8) is not managed by the firmware;** the board variant switches it on at boot.
 - **Own board variant** (`variants/sensebox_home_v2`): the stock `sensebox_mcu_esp32s2` variant blocks 5 s at every boot and switches to `ota_1` if BOOT is pressed then. That would break our OTA/rollback, so we use a copy without it. Don't switch back to the stock variant.

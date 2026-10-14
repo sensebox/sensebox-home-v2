@@ -6,7 +6,7 @@ There is **one firmware for all stations**. Which sensors are connected, how oft
 
 ## Quickstart: HDC1080 only
 
-The smallest setup: one HDC1080 on the MCU S2, no SD card, no WiFi, no LoRaWAN. The box measures and shows the values on the serial console.
+The smallest setup: one HDC1080 on the MCU S2, no SD card, no WiFi, no LoRaWAN (if a card is inserted, it is used automatically, see [SD card](#sd-card)). The box measures and shows the values on the serial console.
 
 **You need:**
 - senseBox MCU S2 with USB cable
@@ -193,7 +193,7 @@ All sections are optional; missing fields use the defaults below. Unknown fields
 | `station` | no | Station details, see below. |
 | `sensors` | no | List of connected sensors (max. 8). Empty = the box measures nothing. |
 | `uplinks` | no | List of data targets (max. 2). Empty = nothing is sent; the box only measures. |
-| `storage` | no | SD card settings. *Not active yet.* |
+| `storage` | no | [SD card](#sd-card) settings. |
 | `service` | no | [Service mode](#service-mode) settings. |
 | `deployment` | no | Free JSON object for installation metadata (location, mounting height, shield, …), max. 511 characters. Stored and exported, not interpreted by the firmware. |
 
@@ -264,14 +264,14 @@ How sending works:
 - **Missed windows are not sent later** (e.g. while not joined): the openSenseMap would timestamp them with the arrival time.
 - **TTN's fair-use limit of 30 s airtime per day is tracked.** When the budget is used up (slow spreading factors, short intervals), windows are skipped and logged.
 
-### `storage` *(not active yet)*
+### `storage`
 
 | Field | Default | Description |
 |---|---|---|
-| `sd` | `"auto"` | `"auto"`: use an SD card if present; `"off"`: never. |
-| `lowWatermarkPct` | `10` | Start deleting the oldest data when free space drops below this (%). |
-| `highWatermarkPct` | `20` | Stop deleting when this much space is free (%). Must be above `lowWatermarkPct`. |
-| `minRetentionDays` | `30` | Never delete data younger than this. |
+| `sd` | `"auto"` | `"auto"`: use an SD card if one is inserted; `"off"`: never touch the card. See [SD card](#sd-card). |
+| `lowWatermarkPct` | `10` | The card is never filled beyond 100 − this (default: **90 %**). Below this much free space the oldest files are deleted, whatever their age… |
+| `highWatermarkPct` | `20` | …until this much is free again (%). Must be above `lowWatermarkPct`. |
+| `minRetentionDays` | `30` | Measurement files younger than this are not deleted for the cleanup from 90 % down to 80 %. It never lets the card go above 90 %. Applies only to files whose age is known (written after the first time sync). |
 
 ### `service`
 
@@ -294,6 +294,57 @@ Every value carries a quality bitmask (`q=0x...` in the log). `0x000` means no r
 | 6 | `0x040` | time not synced: timestamp is seconds since boot, not UTC | no |
 | 7 | `0x080` | average built from fewer samples than expected | no |
 | 8 | `0x100` | value clamped to fit the transmission format | no |
+
+---
+
+## SD card
+
+If a microSD card is inserted and the config has `"storage": {"sd": "auto"}` (the default), the box keeps a **measurement history** and its **log** on the card. Without a card it works the same, just without history. The card is used in normal operation only, not in service or safe mode.
+
+**Files:** named by boot number and part, because after a power cut the box has no time until the first LoRaWAN time sync.
+
+| File | Content |
+|---|---|
+| `/data/B000042-0001.csv` | measurements of boot 42 (part 1): every raw value, every corrected value and every 10-min mean |
+| `/logs/B000042-0001.log` | log of boot 42, including the lines from before the card was mounted |
+
+A new part starts after 4 MB (measurements) or 1 MB (log). A new boot never continues or overwrites an older file. The boot number is counted in the box's flash and printed in the first line of every file.
+
+**Measurement CSV:**
+```
+# senseBox:home v2 firmware 0.1.0-dev, station "Olpe-017", boot 42
+utc,uptime_s,slot,phenomenon,kind,value,unit,quality
+,61,0,air_temperature,raw,23.41,°C,0x040
+# time synced: uptime_s 245 of boot 42 = 2026-10-14T09:30:45Z
+2026-10-14T09:31:01Z,,0,air_temperature,raw,23.40,°C,0x000
+2026-10-14T09:40:00Z,,1,pm2_5,aggregated,4.12,µg/m³,0x000
+```
+
+- Before the first time sync, `utc` is empty and `uptime_s` holds the seconds since boot; the `# time synced` line converts them: UTC = sync time − (245 − uptime_s).
+- `kind` is `raw`, `corrected` (calibration) or `aggregated` (10-min mean of the uplink window).
+- `quality` uses the [quality flags](#quality-flags).
+
+**Log lines:** `2026-10-14T09:31:01Z [    261] I cayenne  queued 23 bytes, 6 channels`, with `-` instead of the date before the first time sync.
+
+**Buffering:** lines are collected in RAM and written every 15 seconds (sooner when the buffer fills up), so a crash or power cut loses at most the last 15 seconds.
+
+**When the card fails or is removed:**
+- The box keeps measuring.
+- It unmounts the card, switches its power off and tries again after 2 s, then 30 s, 60 s, … up to every 10 minutes.
+- Measurements arriving meanwhile are kept in RAM while they fit (about 30 lines), then counted as dropped.
+- A card inserted later is found by the same periodic check.
+- `status` on the console shows the card, the free space and the counters. The `sd` line under health shows the last error.
+
+**Janitor (overflow protection):**
+- **Logs:** at most 10 % of the card, max. 100 MB. Above that the oldest log file is deleted.
+- **Never more than 90 % full** (`lowWatermarkPct`): above that, the oldest files are deleted, whatever their age. Old logs go first, then the oldest measurement files.
+- **Cleanup down to 80 %** (`highWatermarkPct`): deleting continues until 20 % is free again, so it doesn't happen file by file. Measurement files younger than `minRetentionDays` are kept for this part.
+- **Never deleted:** the files currently being written, and files that don't follow the naming scheme (your own files are safe).
+- **Over 90 % anyway:** this only happens if the files currently being written fill the card. Health then shows `card over 90 % full` and the LED flashes red.
+
+The check runs after mounting and every 10 minutes. Each deleted file is logged.
+
+**Card format:** FAT32 (SDHC; 4 GB is plenty: about 0.6 MB of measurements per day for the Olpe setup).
 
 ---
 

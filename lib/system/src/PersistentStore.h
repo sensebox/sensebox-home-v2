@@ -35,6 +35,8 @@ size_t readSecret(const char* key, uint8_t* out, size_t cap);
 // --- system counters ----------------------------------------------------------------
 uint8_t loadUnhealthyBoots();
 void saveUnhealthyBoots(uint8_t value);
+// Increments and returns the boot counter (1, 2, ...). Names the SD card files of this boot.
+uint32_t nextBootId();
 
 // --- device identity (factory_id partition, read-only for the firmware) -------------
 struct DeviceIdentity {
