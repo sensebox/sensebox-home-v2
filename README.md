@@ -118,14 +118,16 @@ Press BOOT only *after* the box has started. Held during power-on or reset, it p
 1. Join the WiFi network `senseBox-…` (the serial number, or the last 6 digits of the MAC address). The password is **`123sensebox`**, unless a different one was set with `service-password` on the serial console. The serial console also shows the network name and password when service mode starts (`*** service mode: WiFi "…", password "…" ***`).
 2. The web page usually opens by itself; otherwise open `http://192.168.4.1/`.
 
-**The web page shows:**
-- the status saved before service mode: overall health, sensors, latest values, LoRaWAN and components
-- settings: station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
-- the complete config as JSON, to edit
-- the log before service mode (with a **Download** button)
-- **log files on the SD card**: list the newest 40 and download them one by one; the card is read only when you press **Show log files**
-- **firmware update**, see [Firmware update (OTA)](#firmware-update-ota)
-- a **Restart into normal mode** button
+**The web page** has, from top to bottom:
+- **Service mode:** the time until service mode closes, and the **Restart into normal mode** button.
+- **Status** (expandable): the status saved before service mode (overview, sensors, last measured values, LoRaWAN, components). It's marked *saved, not live*.
+- **Logs** (expandable):
+  - **Most recent logs:** the last lines logged before service mode, with a **Download** button.
+  - **Log files on the SD card:** list the newest 40 and download them. The card is read only when you press **Show log files**, and the newest file is marked.
+- **Settings** (expandable):
+  - station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
+  - the complete config as JSON, to edit
+- **Firmware update**, see [Firmware update (OTA)](#firmware-update-ota).
 
 Changes are stored immediately and take effect after the restart.
 
