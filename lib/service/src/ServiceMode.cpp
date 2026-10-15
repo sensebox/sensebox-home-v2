@@ -38,6 +38,7 @@ struct Context {
   char* response = nullptr;   // valid during one request
   char ssid[33] = {};
   uint32_t lastActivityMs = 0;
+  uint8_t lastClients = 0;  // to notice a newly connected device
   uint32_t rebootAtMs = 0;
   bool rebootPending = false;
   updater::ImageUpload* upload = nullptr;  // only while a firmware upload runs
@@ -49,10 +50,11 @@ struct Context {
 };
 Context g;
 
-// Starts a request: marks activity and allocates the response buffer for this request.
+// Starts a request: marks activity (unless it is automatic, like the UI's status poll) and
+// allocates the response buffer for this request.
 // Returns the owner; g.response points into it until it goes out of scope.
-std::unique_ptr<char[]> beginRequest() {
-  g.lastActivityMs = millis();
+std::unique_ptr<char[]> beginRequest(bool activity = true) {
+  if (activity) g.lastActivityMs = millis();
   auto buf = sysinfo::makeTempBuffer(kResponseSize);
   g.response = buf.get();
   return buf;
@@ -102,7 +104,9 @@ void handleIndex() {
 }
 
 void handleStatus() {
-  auto buf = beginRequest();
+  // Polled by an open page every 30 s: does not count as activity, or a forgotten tab would keep
+  // service mode open forever.
+  auto buf = beginRequest(false);
   if (outOfMemory(buf)) return;
   const uint32_t now = millis();
   ServiceMode mode;
@@ -331,14 +335,14 @@ void handleOtaDone() {
 
 // Captive portal: phones/laptops probe URLs like /generate_204 or /hotspot-detect.html.
 // Redirecting everything unknown to the start page makes the OS open the web UI by itself.
+// The OS repeats these probes on its own, so they do not count as activity.
 void handleNotFound() {
   if (g.server->uri().startsWith("/api/")) {
-    auto buf = beginRequest();
+    auto buf = beginRequest(false);
     if (outOfMemory(buf)) return;
     sendResult(false, "unknown API endpoint");
     return;
   }
-  g.lastActivityMs = millis();
   g.server->sendHeader("Location", String("http://") + WiFi.softAPIP().toString() + "/", true);
   g.server->send(302, "text/plain", "");
 }
@@ -431,7 +435,10 @@ void ServiceMode::loop(uint32_t nowMs) {
   g.server->handleClient();
   g.response = nullptr;  // only valid during a request
   nowMs = millis();  // handlers update lastActivityMs with the current time
-  if (clients() > 0) g.lastActivityMs = nowMs;  // a connected phone counts as activity
+  // A device joining the AP counts as activity; staying connected does not.
+  const uint8_t n = clients();
+  if (n > g.lastClients) g.lastActivityMs = nowMs;
+  g.lastClients = n;
 
   if (g.rebootPending && static_cast<int32_t>(nowMs - g.rebootAtMs) >= 0) {
     Serial.flush();
@@ -444,6 +451,8 @@ void ServiceMode::loop(uint32_t nowMs) {
     ESP.restart();
   }
 }
+
+void ServiceMode::markActivity() { g.lastActivityMs = millis(); }
 
 const char* ServiceMode::ssid() const { return g.ssid; }
 

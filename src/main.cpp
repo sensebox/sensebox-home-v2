@@ -352,6 +352,7 @@ void loop() {
   if (g_app.serviceMode) {
     // Nothing of normal operation runs; the BOOT button is ignored (leave by restarting).
     g_service.loop(nowMs);
+    if (Serial.available() > 0) g_service.markActivity();
     g_console.poll(nowMs);
     g_led.tick(nowMs, g_health.overall());
     vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));

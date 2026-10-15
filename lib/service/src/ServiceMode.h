@@ -11,6 +11,9 @@
 // WiFi stack alone needs a large part of the RAM. The status of normal operation comes from the
 // snapshot taken before the restart. Leaving service mode = restart (reboot button in the web UI,
 // `reboot` on the console, power cycle, or the inactivity timeout).
+// Activity = a device joining the AP, page loads, user actions in the web UI and console input.
+// A phone that just stays connected, the UI's automatic status poll and the OS's captive-portal
+// probes do not count.
 //
 // REST API (all JSON):
 //   GET  /api/status        service info + snapshot (without log)
@@ -37,6 +40,8 @@ class ServiceMode {
   bool begin(const Options& options);
   // Call from the main loop. Restarts the box after the inactivity timeout or a reboot request.
   void loop(uint32_t nowMs);
+  // Restarts the inactivity timeout (for activity outside the web server, e.g. the console).
+  void markActivity();
 
   const char* ssid() const;
   uint8_t clients() const;
