@@ -24,6 +24,11 @@ pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre
 .tag{display:inline-block;background:var(--mute);color:var(--card);font-size:12px;font-weight:700;letter-spacing:.06em;padding:2px 8px;border-radius:4px}
 .live{display:inline-block;background:var(--ok);color:var(--card);font-size:11px;font-weight:700;letter-spacing:.06em;padding:1px 6px;border-radius:4px;vertical-align:2px;margin-left:6px}
 .tw{overflow-x:auto;-webkit-overflow-scrolling:touch}th{white-space:nowrap}
+.sdlist{max-height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:6px}
+.sdlist th{position:sticky;top:0;background:var(--card);z-index:1}.sdlist td{vertical-align:middle}
+.sdlist tr.newest td{background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.sdlist button{padding:4px 10px;font-size:13px}
+.badge{display:inline-block;background:var(--ok);color:var(--card);font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:1px}
 @media(max-width:600px){main{padding:10px}.saved{padding:8px 8px 0}section{padding:12px}table{font-size:13px}td,th{padding:4px}}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px 16px}.grid div span{color:var(--mute)}
 </style></head><body>
@@ -43,7 +48,8 @@ Settings changed here apply after the restart. Service mode closes after <b id="
 <section><h2>Last measured values (saved)</h2><div class="tw"><table id="values"></table></div></section>
 <section><h2>LoRaWAN (saved)</h2><div class="grid" id="lorawan"></div></section>
 <section><h2>Components (saved)</h2><div class="tw"><table id="components"></table></div></section>
-<section><h2>Log before service mode (saved)</h2><pre id="logBefore"></pre></section>
+<section><h2>Log before service mode (saved)</h2><pre id="logBefore"></pre>
+<div style="margin-top:8px"><button class="sec" id="dlBefore">Download</button></div></section>
 </div>
 
 <section><h2>Settings<span class="live">LIVE</span></h2>
@@ -66,7 +72,12 @@ Choose a <code>firmware.bin</code> of the senseBox:home v2 firmware. Settings an
 <p style="margin:8px 0 0;font-size:13px;color:var(--mute)">After the upload the box restarts into the new firmware and checks it for
 2 minutes. If it crashes or rejects the configuration in that time, the box goes back to the previous firmware by itself.</p></section>
 
-<section><h2>Log during service mode<span class="live">LIVE</span></h2><pre id="logNow"></pre><div style="margin-top:8px"><button class="sec" id="loadLog">Reload</button></div></section>
+<section><h2>Log files on the SD card<span class="live">LIVE</span></h2>
+<p style="margin:0 0 8px">The complete log of normal operation, one file per boot (<code>B000042</code> = boot 42), a new part every 1 MB.
+The newest file ends where service mode was started. The box reads the card only when you press the button.</p>
+<div class="row"><button id="sdList">Show log files</button></div>
+<div class="msg" id="sdMsg"></div><div class="sdlist" id="sdBox" hidden><table id="sdFiles"></table></div></section>
+
 </main>
 <script>
 const $=id=>document.getElementById(id);
@@ -96,13 +107,28 @@ async function loadConfig(){const r=await api('/api/config');if(!r.config){$('cf
  $('devEui').value=u?u.devEui:'';$('joinEui').value=u?u.joinEui:'';$('appKeyState').textContent=r.appKeySet?'set':'not set';
  $('cfgMsg').textContent=r.differsFromRunning?'Stored configuration differs from the one that ran before: restart to apply.':'';}
 function fmtLog(lines){return lines.map(l=>'['+String(l.uptimeS).padStart(7)+'] '+l.level+' '+l.tag.padEnd(8)+' '+l.msg).join('\n')||'(empty)';}
-async function loadLog(){const r=await api('/api/log');$('logBefore').textContent=fmtLog(r.before);$('logNow').textContent=fmtLog(r.now);}
+let logBefore=[];
+async function loadLog(){const r=await api('/api/log');logBefore=r.before||[];$('logBefore').textContent=fmtLog(logBefore);}
+function saveText(name,text){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'text/plain'}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);}
+function kb(n){return n<1024?n+' B':(n/1024).toFixed(n<10240?1:0)+' KB';}
+function download(url,name){const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();}
+async function listSdLogs(){const msg=$('sdMsg'),t=$('sdFiles');msg.textContent='Reading the SD card…';t.innerHTML='';$('sdBox').hidden=true;
+ let r;try{r=await api('/api/sdlogs');}catch(e){msg.textContent='No answer from the box.';return;}
+ if(!r.ok){msg.textContent='Could not read the card: '+r.error;return;}
+ msg.textContent=(r.total>r.files.length?'Newest '+r.files.length+' of '+r.total+' files':r.total+' file(s)')+(r.cardMB?' · card '+r.cardMB+' MB, '+r.freeMB+' MB free':'');
+ table(t,['File','Size',''],r.files.map(f=>[f.name,kb(f.size),'']));
+ r.files.forEach((f,i)=>{const row=t.rows[i+1];
+  if(i===0){row.className='newest';const b=document.createElement('span');b.className='badge';b.textContent='NEWEST';row.cells[0].appendChild(b);
+   row.title='Most recent log file: it ends where service mode was started';}
+  const btn=document.createElement('button');btn.textContent='Download';
+  btn.onclick=()=>download('/api/sdlogs/file?name='+encodeURIComponent(f.name),f.name);row.cells[2].appendChild(btn);});
+ $('sdBox').hidden=r.files.length===0;}
 document.querySelectorAll('button[data-field]').forEach(b=>b.onclick=async()=>{const input=b.parentElement.querySelector('input');
  const res=await api('/api/config/field',{field:b.dataset.field,value:input.value.trim()});show($('settingsMsg'),res,'Saved. Restart to apply.');if(res.ok)loadConfig();});
 $('saveAppKey').onclick=async()=>{const res=await api('/api/appkey',{appKey:$('appKey').value.trim()});show($('settingsMsg'),res,'AppKey saved. Restart to apply.');if(res.ok){$('appKey').value='';loadConfig();}};
 $('saveCfg').onclick=async()=>{let txt=$('cfg').value;try{txt=JSON.stringify(JSON.parse(txt));}catch(e){$('cfgMsg').textContent='Error: not valid JSON ('+e.message+')';$('cfgMsg').className='msg error';return;}
  const res=await api('/api/config',txt);show($('cfgMsg'),res,'Saved. Restart to apply.');if(res.ok)loadConfig();};
-$('loadCfg').onclick=loadConfig;$('loadLog').onclick=loadLog;
+$('loadCfg').onclick=loadConfig;
 // In-page confirmation: confirm()/alert() do nothing in the iOS captive-portal browser.
 function ask(msg,text,yes,onYes){msg.textContent=text+' ';const y=document.createElement('button'),n=document.createElement('button');
  y.textContent=yes;n.textContent='Cancel';n.className='sec';n.style.marginLeft='8px';msg.appendChild(document.createElement('br'));msg.appendChild(y);msg.appendChild(n);
@@ -121,5 +147,8 @@ $('fwUpload').onclick=()=>{const f=$('fwFile').files[0],msg=$('fwMsg'),bar=$('fw
  x.onerror=()=>{uploading=false;msg.textContent='Upload failed (connection lost at '+bar.value+' %). Nothing was changed; try again. The serial log of the box shows the reason.';bar.hidden=true;$('fwUpload').disabled=false;};
  uploading=true;$('fwUpload').disabled=true;bar.hidden=false;bar.value=0;msg.textContent='Uploading…';x.open('POST','/api/ota');x.send(fd);});};
 let uploading=false;  // the box serves one connection at a time: no polling during an upload
+$('dlBefore').onclick=()=>{const name=($('title').textContent||'sensebox').replace(/[^\w.-]+/g,'_');
+ saveText(name+'-log-before-service-mode.txt','# '+$('title').textContent+', log saved before service mode ('+$('savedWhen').textContent+')\n'+fmtLog(logBefore)+'\n');};
+$('sdList').onclick=listSdLogs;
 loadStatus();loadConfig();loadLog();setInterval(()=>{if(uploading)return;api('/api/status').then(st=>{$('left').textContent=dur(st.service.secondsLeft);savedWhen(st);}).catch(()=>{});},30000);
 </script></body></html>

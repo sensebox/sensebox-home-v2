@@ -95,6 +95,13 @@ int64_t SdCardFs::read(const char* path, uint64_t offset, char* buf, size_t len)
   return n;
 }
 
+FILE* SdCardFs::openRead(const char* path) {
+  if (!mounted_) return nullptr;
+  char full[64];
+  fullPath(path, full, sizeof(full));
+  return fopen(full, "r");
+}
+
 uint32_t SdCardFs::fileMtime(const char* path) {
   if (!mounted_) return 0;
   char full[64];

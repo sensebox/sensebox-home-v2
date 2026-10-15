@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdio.h>
+
 #include "FileSystem.h"
 
 // The microSD slot of the senseBox MCU S2 (plan §4.7.1): own SPI bus (HSPI: CS 10, MOSI 11,
@@ -22,6 +24,10 @@ class SdCardFs : public FileSystem {
   bool list(const char* dir, ListFn fn, void* ctx) override;
   bool space(uint64_t& totalBytes, uint64_t& freeBytes) override;
   void setTime(uint32_t utc) override;
+
+  // Opens a file for sequential reading (e.g. a download), nullptr if that fails. The caller
+  // closes it with fclose() before unmount().
+  FILE* openRead(const char* path);
 
  private:
   bool mounted_ = false;

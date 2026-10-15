@@ -17,7 +17,7 @@
 //
 // REST API (all JSON):
 //   GET  /api/status        service info + snapshot (without log)
-//   GET  /api/log           log before the restart (snapshot) and of service mode
+//   GET  /api/log           log before service mode (from the snapshot)
 //   GET  /api/config        stored config (no secrets), appKeySet, differsFromRunning
 //   POST /api/config        complete config JSON
 //   POST /api/config/field  {"field":"name"|"uplinks.devEui"|"uplinks.joinEui","value":"..."}
@@ -25,6 +25,9 @@
 //   POST /api/reboot        restart into normal mode
 //   POST /api/ota           firmware update: multipart/form-data with the .bin file (any field
 //                           name); on success the box restarts into the new firmware
+//   GET  /api/sdlogs        log files on the SD card (newest 40: name, size), card size/free
+//   GET  /api/sdlogs/file?name=B000042-0001.log   download one log file
+// The SD card is only mounted while one of the /api/sdlogs requests runs (RAM, see .cpp).
 
 class ServiceMode {
  public:

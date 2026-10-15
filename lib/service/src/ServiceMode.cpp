@@ -14,7 +14,9 @@
 #include "ConfigEditor.h"
 #include "Log.h"
 #include "PersistentStore.h"
+#include "SdCardFs.h"
 #include "ServicePassword.h"
+#include "StorageFormat.h"
 #include "SystemInfo.h"
 #include "Updater.h"
 #include "Version.h"
@@ -24,10 +26,14 @@ namespace {
 
 constexpr const char* kTag = "service";
 constexpr size_t kResponseSize = 6144;  // per request, freed afterwards
-constexpr size_t kLiveLogLines = logger::kRingLines;
 constexpr uint8_t kMaxClients = 2;  // each WiFi station costs RAM
 constexpr uint32_t kRebootDelayMs = 500;
 constexpr uint32_t kLowHeapWarning = 30000;
+// The SD card isn't used in service mode, except while a log file request runs: mounting it
+// costs ~5-9 KB of heap (FAT structures, file buffer), which must not starve WiFi.
+constexpr uint32_t kMinHeapForSd = 16000;
+constexpr size_t kMaxListedLogs = 40;  // newest files only
+constexpr size_t kDownloadChunk = 1436;  // one TCP segment
 
 // Server objects live on the heap and are created in begin(): normal mode never pays for them.
 // Response buffers are allocated per request (no PSRAM: nothing big stays allocated).
@@ -149,18 +155,6 @@ void handleLog() {
       o["msg"] = s.log[i].msg;
     }
   }
-  JsonArray now = doc["now"].to<JsonArray>();
-  const size_t total = logger::lineCount();
-  for (size_t age = total < kLiveLogLines ? total : kLiveLogLines; age > 0; --age) {
-    LogLine line;
-    if (!logger::lineAt(age - 1, line)) continue;
-    JsonObject o = now.add<JsonObject>();
-    o["uptimeS"] = line.uptimeS;
-    char level[2] = {logger::levelLetter(line.level), '\0'};
-    o["level"] = level;
-    o["tag"] = line.tag;
-    o["msg"] = line.msg;
-  }
   if (measureJson(doc) + 1 > kResponseSize) {
     sendResult(false, "log too large");
     return;
@@ -250,6 +244,168 @@ void pauseDns(bool pause) {
   } else {
     g.dns->begin(53);
   }
+}
+
+// --- log files on the SD card ---------------------------------------------------------
+
+// Error answer without the per-request response buffer: the SD handlers leave the heap to the
+// card (sendResult() needs beginRequest()'s buffer).
+void sendSmallError(const char* msg) {
+  char json[160];
+  const int n = snprintf(json, sizeof(json), "{\"ok\":false,\"error\":\"%s\"}", msg);
+  sendJson(400, json, static_cast<size_t>(n));
+}
+
+// Mounts the card for the lifetime of one request.
+class SdSession {
+ public:
+  SdSession() : ok_(sysinfo::freeHeap() >= kMinHeapForSd && fs_.mount()) {}
+  ~SdSession() { fs_.unmount(); }
+  bool ok() const { return ok_; }
+  SdCardFs& fs() { return fs_; }
+
+ private:
+  SdCardFs fs_;
+  bool ok_;
+};
+
+struct LogEntry {
+  uint64_t key;
+  char name[24];
+};
+
+// Keeps the newest kMaxListedLogs log files (by boot number and part).
+struct LogScan {
+  LogEntry items[kMaxListedLogs];
+  size_t count = 0;
+  uint32_t total = 0;
+};
+
+void onLogFile(const char* name, void* p) {
+  LogScan& s = *static_cast<LogScan*>(p);
+  uint32_t boot;
+  uint16_t part;
+  const size_t len = strlen(name);
+  if (!storagefmt::parseFileName(name, boot, part) || len >= sizeof(LogEntry::name) || len < 4 ||
+      strcmp(name + len - 4, ".log") != 0) {
+    return;
+  }
+  ++s.total;
+  const uint64_t key = storagefmt::fileKey(boot, part);
+  size_t slot = s.count;
+  if (s.count == kMaxListedLogs) {  // full: replace the oldest kept entry if this one is newer
+    slot = 0;
+    for (size_t i = 1; i < s.count; ++i) {
+      if (s.items[i].key < s.items[slot].key) slot = i;
+    }
+    if (s.items[slot].key >= key) return;
+  } else {
+    ++s.count;
+  }
+  s.items[slot].key = key;
+  strcpy(s.items[slot].name, name);
+}
+
+void handleSdLogList() {
+  g.lastActivityMs = millis();
+  sysinfo::watchdogFeed();
+  auto scan = sysinfo::makeTemp<LogScan>();
+  if (!scan) {
+    sendSmallError("out of memory");
+    return;
+  }
+  SdSession sd;
+  if (!sd.ok()) {
+    sendSmallError(sysinfo::freeHeap() < kMinHeapForSd ? "not enough memory to read the SD card right now"
+                                                          : "SD card not found or not readable");
+    return;
+  }
+  sd.fs().list(storagefmt::kLogDir, onLogFile, scan.get());
+  // newest first
+  for (size_t i = 1; i < scan->count; ++i) {
+    for (size_t j = i; j > 0 && scan->items[j].key > scan->items[j - 1].key; --j) {
+      const LogEntry t = scan->items[j];
+      scan->items[j] = scan->items[j - 1];
+      scan->items[j - 1] = t;
+    }
+  }
+  JsonDocument doc;
+  doc["ok"] = true;
+  doc["total"] = scan->total;
+  uint64_t totalBytes = 0;
+  uint64_t freeBytes = 0;
+  if (sd.fs().space(totalBytes, freeBytes)) {
+    doc["cardMB"] = static_cast<uint32_t>(totalBytes >> 20);
+    doc["freeMB"] = static_cast<uint32_t>(freeBytes >> 20);
+  }
+  JsonArray files = doc["files"].to<JsonArray>();
+  char path[storagefmt::kPathLen];
+  for (size_t i = 0; i < scan->count; ++i) {
+    sysinfo::watchdogFeed();
+    snprintf(path, sizeof(path), "%s/%s", storagefmt::kLogDir, scan->items[i].name);
+    JsonObject f = files.add<JsonObject>();
+    f["name"] = scan->items[i].name;
+    f["size"] = sd.fs().fileSize(path);
+  }
+  scan.reset();
+  auto buf = sysinfo::makeTempBuffer(measureJson(doc) + 1);
+  if (!buf) {
+    sendSmallError("out of memory");
+    return;
+  }
+  const size_t len = serializeJson(doc, buf.get(), measureJson(doc) + 1);
+  sendJson(200, buf.get(), len);
+}
+
+void pauseDns(bool pause);
+
+// Streams one log file. The download blocks the main loop, so the watchdog is fed per chunk.
+void handleSdLogFile() {
+  g.lastActivityMs = millis();
+  const String& name = g.server->arg("name");
+  uint32_t boot;
+  uint16_t part;
+  if (!storagefmt::parseFileName(name.c_str(), boot, part) || !name.endsWith(".log") || name.length() >= 24) {
+    sendSmallError("invalid file name");  // also rules out paths like ../
+    return;
+  }
+  auto chunk = sysinfo::makeTempBuffer(kDownloadChunk);
+  if (!chunk) {
+    sendSmallError("out of memory");
+    return;
+  }
+  SdSession sd;
+  if (!sd.ok()) {
+    sendSmallError("SD card not found, not readable or not enough memory");
+    return;
+  }
+  char path[storagefmt::kPathLen];
+  snprintf(path, sizeof(path), "%s/%s", storagefmt::kLogDir, name.c_str());
+  const int64_t size = sd.fs().fileSize(path);
+  FILE* f = size >= 0 ? sd.fs().openRead(path) : nullptr;
+  if (f == nullptr) {
+    sendSmallError("file not found");
+    return;
+  }
+  LOGI(kTag, "download %s (%lu KB)", name.c_str(), static_cast<unsigned long>(size / 1024));
+  pauseDns(true);
+  g.server->sendHeader("Content-Disposition", String("attachment; filename=\"") + name + "\"");
+  g.server->sendHeader("Cache-Control", "no-store");
+  g.server->setContentLength(static_cast<size_t>(size));
+  g.server->send(200, "text/plain; charset=utf-8", "");
+  int64_t sent = 0;
+  while (sent < size) {
+    const size_t n = fread(chunk.get(), 1, kDownloadChunk, f);
+    if (n == 0) break;
+    g.server->sendContent(chunk.get(), n);
+    sent += static_cast<int64_t>(n);
+    sysinfo::watchdogFeed();
+    g.lastActivityMs = millis();
+    if (!g.server->client().connected()) break;
+  }
+  fclose(f);
+  pauseDns(false);
+  if (sent < size) LOGW(kTag, "download of %s stopped after %lu KB", name.c_str(), static_cast<unsigned long>(sent / 1024));
 }
 
 // Firmware upload, called by WebServer for every chunk of the multipart body. The whole upload
@@ -394,6 +550,8 @@ bool ServiceMode::begin(const Options& options) {
   g.server->on("/api/appkey", HTTP_POST, handlePostAppKey);
   g.server->on("/api/reboot", HTTP_POST, handleReboot);
   g.server->on("/api/ota", HTTP_POST, handleOtaDone, handleOtaChunk);
+  g.server->on("/api/sdlogs", HTTP_GET, handleSdLogList);
+  g.server->on("/api/sdlogs/file", HTTP_GET, handleSdLogFile);
   g.server->onNotFound(handleNotFound);
   g.server->begin();
 

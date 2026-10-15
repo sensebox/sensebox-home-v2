@@ -122,7 +122,8 @@ Press BOOT only *after* the box has started. Held during power-on or reset, it p
 - the status saved before service mode: overall health, sensors, latest values, LoRaWAN and components
 - settings: station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
 - the complete config as JSON, to edit
-- the log before and during service mode
+- the log before service mode (with a **Download** button)
+- **log files on the SD card**: list the newest 40 and download them one by one; the card is read only when you press **Show log files**
 - **firmware update**, see [Firmware update (OTA)](#firmware-update-ota)
 - a **Restart into normal mode** button
 
@@ -141,13 +142,17 @@ The web page uses a small REST API, which tools can use too:
 | Request | What it does |
 |---|---|
 | `GET /api/status` | service-mode info (network, clients, time until timeout, memory) and the saved status |
-| `GET /api/log` | log lines before and during service mode |
+| `GET /api/log` | the log lines saved before service mode (`before`) |
 | `GET /api/config` | stored config (no secrets), whether the AppKey is set, whether a restart is pending |
 | `POST /api/config` | store a complete config (JSON body) |
 | `POST /api/config/field` | `{"field": "name" \| "uplinks.devEui" \| "uplinks.joinEui", "value": "…"}` |
 | `POST /api/appkey` | `{"appKey": "<32 hex digits>"}` |
 | `POST /api/reboot` | restart into normal operation |
 | `POST /api/ota` | firmware update: the `.bin` file as `multipart/form-data`, e.g. `curl -F firmware=@firmware.bin http://192.168.4.1/api/ota` |
+| `GET /api/sdlogs` | log files on the SD card (newest 40: name and size), card size and free space |
+| `GET /api/sdlogs/file?name=B000042-0001.log` | download one log file |
+
+The SD card is not in use in service mode. Only during one of the `/api/sdlogs` requests is it mounted, and it is unmounted right after: it needs about 5–9 KB of RAM, which WiFi needs otherwise. With less than 16 KB free the request is refused (`not enough memory`).
 
 All answers are JSON; errors come as `{"ok": false, "error": "…"}`.
 
