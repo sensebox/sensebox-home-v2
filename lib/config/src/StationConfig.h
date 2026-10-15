@@ -94,10 +94,8 @@ struct UplinkConfig {
   LoRaWanConfig lorawan;
 };
 
-enum class SdMode : uint8_t { Auto = 0, Off };
-
+// The SD card is a fixed part of the hardware (at least 4 GB), so there is no on/off switch.
 struct StorageConfig {
-  SdMode sd = SdMode::Auto;
   uint8_t lowWatermarkPct = 10;
   uint8_t highWatermarkPct = 20;
   uint16_t minRetentionDays = 30;

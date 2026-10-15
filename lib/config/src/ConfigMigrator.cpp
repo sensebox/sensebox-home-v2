@@ -5,8 +5,9 @@
 namespace config {
 namespace {
 
-// Add steps here when the schema changes: kSteps[0] migrates v1 -> v2, and so on.
-// Bump kSchemaVersion in StationConfig.h and add a fixture test for every new step.
+// Add steps here when the schema changes after the first release: kSteps[0] migrates v1 -> v2,
+// and so on. Bump kSchemaVersion in StationConfig.h and add a fixture test for every new step.
+// Until the first release, the schema is changed in place (no stations in the field yet).
 constexpr MigrationStep* kSteps = nullptr;
 constexpr MigrationTable kTable = {kSteps, 0, 1};
 

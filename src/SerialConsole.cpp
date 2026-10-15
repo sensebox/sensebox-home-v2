@@ -193,13 +193,13 @@ void SerialConsole::printStatus(uint32_t nowMs) {
 
   const SdStore::Status sd = app_.storage.status();
   if (!sd.enabled) {
-    Serial.println("sd: off in config");
+    Serial.println("sd: not used (out of memory at boot)");
   } else if (!sd.mounted) {
-    Serial.println("sd: no card / not mounted (see the 'sd' health line)");
+    Serial.println("sd: NOT MOUNTED - the card is part of the hardware; see the 'sd' health line");
   } else {
-    Serial.printf("sd: %s, %lu of %lu MB free, writing %s and %s\n", sd.full ? "FULL" : "ok",
+    Serial.printf("sd: %s, %lu of %lu MB free%s, writing %s and %s\n", sd.full ? "FULL" : "ok",
                   static_cast<unsigned long>(sd.freeBytes >> 20), static_cast<unsigned long>(sd.totalBytes >> 20),
-                  sd.dataFile, sd.logFile);
+                  sd.smallCard ? " (smaller than 4 GB!)" : "", sd.dataFile, sd.logFile);
   }
   if (sd.enabled) {
     Serial.printf("    files deleted %lu, write errors %lu, dropped measurements %lu, dropped log lines %lu\n",

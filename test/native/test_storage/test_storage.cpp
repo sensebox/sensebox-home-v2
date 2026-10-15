@@ -340,7 +340,7 @@ void test_new_boot_never_overwrites() {
   TEST_ASSERT_EQUAL_STRING("/data/B000042-0002.csv", sd.status().dataFile);
 }
 
-void test_no_card_is_not_an_error_and_card_is_found_later() {
+void test_missing_card_is_a_fault_and_data_waits_for_it() {
   FakeFs fs;
   fs.cardPresent = false;
   Clock clock(fakeUptimeMs);
@@ -348,13 +348,17 @@ void test_no_card_is_not_an_error_and_card_is_found_later() {
   SdStore sd(fs, clock, health);
   TEST_ASSERT_TRUE(sd.begin(testOptions(), 0));
   TEST_ASSERT_FALSE(sd.status().mounted);
-  TEST_ASSERT_EQUAL(static_cast<int>(ComponentStatus::Unknown), static_cast<int>(health.overall()));  // disabled: ignored
-  sd.onMeasurement(meas(Phenomenon::PM10, 1.0f, 1, quality::kTimeUnsynced));  // not buffered without a card
+  // The card is part of the hardware: missing = error (LED red), not "disabled".
+  TEST_ASSERT_EQUAL(static_cast<int>(ComponentStatus::Error), static_cast<int>(health.overall()));
+  sd.onMeasurement(meas(Phenomenon::PM10, 1.5f, 5, quality::kTimeUnsynced));  // buffered meanwhile
   TEST_ASSERT_EQUAL_UINT32(0, sd.status().droppedMeasurements);
 
   fs.cardPresent = true;
-  advance(sd, 31000);  // first retry after 30 s
+  advance(sd, 31000);  // first retry after 30 s, then the first flush
   TEST_ASSERT_TRUE(sd.status().mounted);
+  advance(sd, 11000);
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, fs.content("/data/B000042-0001.csv").find(",5,0,pm10,raw,1.50"));
+  TEST_ASSERT_EQUAL(static_cast<int>(ComponentStatus::Ok), static_cast<int>(health.overall()));
 }
 
 void test_write_error_remounts_and_keeps_buffered_data() {
@@ -413,18 +417,19 @@ void test_buffer_overflow_counts_dropped() {
   TEST_ASSERT_TRUE(sd.status().droppedMeasurements > 0);
 }
 
-void test_sd_off_never_touches_the_card() {
-  FakeFs fs;
+void test_small_card_is_flagged() {
   Clock clock(fakeUptimeMs);
   HealthRegistry health(fakeUptimeS);
-  SdStore sd(fs, clock, health);
-  SdStore::Options o = testOptions();
-  o.storage.sd = config::SdMode::Off;
-  TEST_ASSERT_FALSE(sd.begin(o, 0));
-  sd.onMeasurement(meas(Phenomenon::PM10, 1.0f, 1));
-  advance(sd, 60000);
-  TEST_ASSERT_EQUAL(0, fs.mounts);
-  TEST_ASSERT_TRUE(fs.files.empty());
+  FakeFs small;  // 64 MB
+  SdStore a(small, clock, health);
+  a.begin(testOptions(), 0);
+  TEST_ASSERT_TRUE(a.status().smallCard);
+
+  FakeFs card4g;
+  card4g.capacity = 3965ull * 1024 * 1024;  // what a "4 GB" card reports
+  SdStore b(card4g, clock, health);
+  b.begin(testOptions(), 0);
+  TEST_ASSERT_FALSE(b.status().smallCard);
 }
 
 void test_janitor_frees_space_oldest_first() {
@@ -484,11 +489,11 @@ int main() {
   RUN_TEST(test_sync_marker_and_utc_lines);
   RUN_TEST(test_rotation);
   RUN_TEST(test_new_boot_never_overwrites);
-  RUN_TEST(test_no_card_is_not_an_error_and_card_is_found_later);
+  RUN_TEST(test_missing_card_is_a_fault_and_data_waits_for_it);
   RUN_TEST(test_write_error_remounts_and_keeps_buffered_data);
   RUN_TEST(test_card_removed_permanently_retries_with_backoff);
   RUN_TEST(test_buffer_overflow_counts_dropped);
-  RUN_TEST(test_sd_off_never_touches_the_card);
+  RUN_TEST(test_small_card_is_flagged);
   RUN_TEST(test_janitor_frees_space_oldest_first);
   RUN_TEST(test_janitor_never_deletes_current_files_and_reports_full);
   return UNITY_END();

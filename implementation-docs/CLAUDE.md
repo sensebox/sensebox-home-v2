@@ -35,7 +35,7 @@ PlatformIO isn't on PATH; use `~/.platformio/penv/bin/pio`.
 - **LMIC is owned by its own task:** all `LMIC_*` / `os_*` calls happen in the LMIC task, and everything else communicates with it through FreeRTOS queues.
 - **Time:** UTC internally (epoch seconds). Timezones only for display. Values recorded before the first time sync are flagged `Q_TIME_UNSYNCED`.
 - **Raw values are never overwritten:** calibration produces a separate `Corrected` value, and aggregation a separate `Aggregated` value. Quality checks *flag* values, they don't drop them.
-- **Config:** a versioned JSON document (`schemaVersion`) in NVS with migration steps. Never delete an old config; migrate it. Secrets (LoRaWAN AppKey, later WiFi PSK / OSeM token) live in a separate NVS namespace, are write-only over the API, and never appear in exports, logs, diagnostic reports or on the SD card.
+- **Config:** a versioned JSON document (`schemaVersion`, currently 1) in NVS with migration steps (`lib/config/src/ConfigMigrator.cpp`). Until the first release the schema is changed in place, without migration steps (decision 2026-10-15: not live yet). After that, a schema change = bump `kSchemaVersion`, add a step and a fixture test. Never delete an old config; migrate it. Secrets (LoRaWAN AppKey, later WiFi PSK / OSeM token) live in a separate NVS namespace, are write-only over the API, and never appear in exports, logs, diagnostic reports or on the SD card.
 - **Logging:** use the logger macros with module tags (`LOGE/LOGW/LOGI/LOGD("sps30", ...)`), never bare `Serial.print`.
 
 When adding a feature, check it against these five questions:
@@ -48,7 +48,7 @@ When adding a feature, check it against these five questions:
 ## Hardware facts and gotchas
 - **Sensor I2C** is QWIIC on SDA 39 / SCL 40, at 100 kHz (the SPS30 limit). AM2315C is at `0x38`, SPS30 at `0x69`.
 - **LoRa-Bee in XB1:** CS 34, RESET 38, power 41. DIO0 and DIO1 are **both on INT 33** (same as the v1 LMIC pin map).
-- **SD card** has its own SPI bus (HSPI: CS 10, MOSI 11, SCK 12, MISO 13) and a power switch on pin 9 (`SD_ENABLE`, LOW = on, as in the official MCU-S2 examples). Used in normal operation only; all SD access from the main loop.
+- **SD card** is a fixed part of the hardware (at least 4 GB; missing = hardware fault, health `ERROR`, never a reason to stop measuring). Own SPI bus (HSPI: CS 10, MOSI 11, SCK 12, MISO 13) and a power switch on pin 9 (`SD_ENABLE`, LOW = on, as in the official MCU-S2 examples). Used in normal operation only; all SD access from the main loop. Large or long-lived data belongs on the card, not in RAM (no PSRAM).
 - **Service mode is the BOOT button (GPIO0), pressed ≥ 3 s while running.** GPIO0 is a strapping pin: held during reset, it enters download mode. Input with pull-up only, never drive it.
 - **`IO_ENABLE` (8) is not managed by the firmware;** the board variant switches it on at boot.
 - **Own board variant** (`variants/sensebox_home_v2`): the stock `sensebox_mcu_esp32s2` variant blocks 5 s at every boot and switches to `ota_1` if BOOT is pressed then. That would break our OTA/rollback, so we use a copy without it. Don't switch back to the stock variant.

@@ -184,15 +184,8 @@ bool decodeRoot(JsonObjectConst root, StationConfig& cfg, DecodeResult& r) {
 
   JsonObjectConst storage = root["storage"];
   if (!storage.isNull()) {
-    JsonVariantConst sd = storage["sd"];
-    if (!sd.isNull()) {
-      if (sd == "auto") {
-        cfg.storage.sd = SdMode::Auto;
-      } else if (sd == "off") {
-        cfg.storage.sd = SdMode::Off;
-      } else {
-        return fail(r, "storage.sd: must be \"auto\" or \"off\"");
-      }
+    if (!storage["sd"].isNull()) {
+      return fail(r, "storage.sd: no longer exists: the SD card is always used");
     }
     if (!readUInt(storage["lowWatermarkPct"], cfg.storage.lowWatermarkPct, 1, 90, "storage.lowWatermarkPct", r)) return false;
     if (!readUInt(storage["highWatermarkPct"], cfg.storage.highWatermarkPct, 2, 95, "storage.highWatermarkPct", r)) return false;
@@ -307,7 +300,6 @@ size_t encode(const StationConfig& cfg, char* buf, size_t cap, bool pretty) {
   }
 
   JsonObject storage = doc["storage"].to<JsonObject>();
-  storage["sd"] = cfg.storage.sd == SdMode::Off ? "off" : "auto";
   storage["lowWatermarkPct"] = cfg.storage.lowWatermarkPct;
   storage["highWatermarkPct"] = cfg.storage.highWatermarkPct;
   storage["minRetentionDays"] = cfg.storage.minRetentionDays;

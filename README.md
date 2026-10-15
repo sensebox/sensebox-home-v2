@@ -6,11 +6,12 @@ There is **one firmware for all stations**. Which sensors are connected, how oft
 
 ## Quickstart: HDC1080 only
 
-The smallest setup: one HDC1080 on the MCU S2, no SD card, no WiFi, no LoRaWAN (if a card is inserted, it is used automatically, see [SD card](#sd-card)). The box measures and shows the values on the serial console.
+The smallest setup: one HDC1080 on the MCU S2, no WiFi, no LoRaWAN. The box measures and shows the values on the serial console, and writes them to the [SD card](#sd-card).
 
 **You need:**
 - senseBox MCU S2 with USB cable
 - HDC1080 temperature/humidity sensor on a QWIIC/I2C port
+- microSD card (at least 4 GB, FAT32) in the MCU S2. It is part of the hardware: without it the box still measures, but reports an `sd` error and the LED is red.
 - [PlatformIO](https://platformio.org/) (CLI or the VS Code extension)
 
 **1. Build and flash the development firmware.** The dev build logs every single measurement; the normal build only logs the averages that get uploaded.
@@ -205,7 +206,7 @@ All sections are optional; missing fields use the defaults below. Unknown fields
         { "ch": 6, "slot": 1, "phenomenon": "pm4",   "lpp": "analog_in" }
       ] }
   ],
-  "storage": { "sd": "auto", "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
+  "storage": { "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
   "service": { "apTimeoutMin": 15 },
   "deployment": { "lat": 51.03, "lon": 7.85, "heightAboveGround": 2.5 }
 }
@@ -294,7 +295,6 @@ How sending works:
 
 | Field | Default | Description |
 |---|---|---|
-| `sd` | `"auto"` | `"auto"`: use an SD card if one is inserted; `"off"`: never touch the card. See [SD card](#sd-card). |
 | `lowWatermarkPct` | `10` | The card is never filled beyond 100 − this (default: **90 %**). Below this much free space the oldest files are deleted, whatever their age… |
 | `highWatermarkPct` | `20` | …until this much is free again (%). Must be above `lowWatermarkPct`. |
 | `minRetentionDays` | `30` | Measurement files younger than this are not deleted for the cleanup from 90 % down to 80 %. It never lets the card go above 90 %. Applies only to files whose age is known (written after the first time sync). |
@@ -325,7 +325,9 @@ Every value carries a quality bitmask (`q=0x...` in the log). `0x000` means no r
 
 ## SD card
 
-If a microSD card is inserted and the config has `"storage": {"sd": "auto"}` (the default), the box keeps a **measurement history** and its **log** on the card. Without a card it works the same, just without history. The card is used in normal operation only, not in service or safe mode.
+The microSD card is a **fixed part of the hardware** (at least 4 GB). The box keeps its **measurement history** and its **log** on it. It is used in normal operation only, not in service or safe mode.
+
+A missing or failing card is treated as a hardware fault: health shows an `sd` error and the LED is red. Measuring and sending continue meanwhile, so nothing else stops because of the card.
 
 **Files:** named by boot number and part, because after a power cut the box has no time until the first LoRaWAN time sync.
 
@@ -354,11 +356,12 @@ utc,uptime_s,slot,phenomenon,kind,value,unit,quality
 
 **Buffering:** lines are collected in RAM and written every 15 seconds (sooner when the buffer fills up), so a crash or power cut loses at most the last 15 seconds.
 
-**When the card fails or is removed:**
-- The box keeps measuring.
-- It unmounts the card, switches its power off and tries again after 2 s, then 30 s, 60 s, … up to every 10 minutes.
-- Measurements arriving meanwhile are kept in RAM while they fit (about 30 lines), then counted as dropped.
-- A card inserted later is found by the same periodic check.
+**When the card is missing, fails or is removed:**
+- The box keeps measuring and sending.
+- It unmounts the card, switches its power off and tries again after 2 s, then 30 s, 60 s, … up to every 10 minutes (a missing card at boot: first retry after 30 s).
+- Measurements arriving meanwhile, also before the card was mounted the first time, are kept in RAM while they fit (about 30 lines), then counted as dropped.
+- A reseated card is found by the same periodic check.
+- A card smaller than 4 GB is used, but `status` and the log warn about it.
 - `status` on the console shows the card, the free space and the counters. The `sd` line under health shows the last error.
 
 **Janitor (overflow protection):**
@@ -366,11 +369,11 @@ utc,uptime_s,slot,phenomenon,kind,value,unit,quality
 - **Never more than 90 % full** (`lowWatermarkPct`): above that, the oldest files are deleted, whatever their age. Old logs go first, then the oldest measurement files.
 - **Cleanup down to 80 %** (`highWatermarkPct`): deleting continues until 20 % is free again, so it doesn't happen file by file. Measurement files younger than `minRetentionDays` are kept for this part.
 - **Never deleted:** the files currently being written, and files that don't follow the naming scheme (your own files are safe).
-- **Over 90 % anyway:** this only happens if the files currently being written fill the card. Health then shows `card over 90 % full` and the LED flashes red.
+- **Over 90 % anyway:** this only happens if the files currently being written fill the card. Health then shows `card over 90 % full` and the LED is red.
 
 The check runs after mounting and every 10 minutes. Each deleted file is logged.
 
-**Card format:** FAT32 (SDHC; 4 GB is plenty: about 0.6 MB of measurements per day for the Olpe setup).
+**Card format:** FAT32 (SDHC). 4 GB is plenty: about 0.6 MB of measurements per day for the Olpe setup, so the card holds years of history before the janitor starts deleting.
 
 ---
 

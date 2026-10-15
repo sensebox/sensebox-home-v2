@@ -11,6 +11,8 @@ namespace {
 constexpr const char* kTag = "sd";
 constexpr uint32_t kLockTimeoutMs = 20;
 constexpr uint16_t kMaxPart = 9999;
+// The hardware has a card of at least 4 GB; a "4 GB" card reports ~3.7 GiB.
+constexpr uint64_t kMinCardBytes = 3500ull * 1000 * 1000;
 
 const char* baseName(const char* path) {
   const char* slash = strrchr(path, '/');
@@ -55,12 +57,6 @@ SdStore::~SdStore() {
 
 bool SdStore::begin(const Options& options, uint32_t nowMs) {
   opt_ = options;
-  if (opt_.storage.sd == config::SdMode::Off) {
-    state_ = State::Off;
-    health_.reportError(healthId_, 0, "off in config", ComponentStatus::Disabled);
-    LOGI(kTag, "SD card disabled in config");
-    return false;
-  }
   dataBuf_ = new (std::nothrow) char[opt_.dataBufferBytes];
   logBuf_[0] = new (std::nothrow) char[opt_.logBufferBytes];
   logBuf_[1] = new (std::nothrow) char[opt_.logBufferBytes];
@@ -80,16 +76,12 @@ void SdStore::tryMount(uint32_t nowMs) {
     const uint32_t delay = backoffMs(opt_.retryBaseMs, opt_.retryMaxMs, retryAttempt_);
     if (retryAttempt_ < 255) ++retryAttempt_;
     retryAtMs_ = nowMs + delay;
-    if (everMounted_) {
-      char msg[ComponentHealth::kErrorLen];
-      snprintf(msg, sizeof(msg), "card removed or failing, retry in %lu s", static_cast<unsigned long>(delay / 1000));
-      health_.reportError(healthId_, 2, msg);
-      LOGW(kTag, "%s", msg);
-    } else if (retryAttempt_ == 1) {
-      // Not an error: the card is optional ("sd": "auto").
-      health_.reportError(healthId_, 1, "no SD card", ComponentStatus::Disabled);
-      LOGI(kTag, "no SD card: measuring without history (checking again from time to time)");
-    }
+    // The card is a fixed part of the hardware: not finding it is a hardware fault.
+    char msg[ComponentHealth::kErrorLen];
+    snprintf(msg, sizeof(msg), "%s, retry in %lu s", everMounted_ ? "card removed or failing" : "no SD card found",
+             static_cast<unsigned long>(delay / 1000));
+    health_.reportError(healthId_, everMounted_ ? 2 : 1, msg);
+    LOGW(kTag, "%s", msg);
     return;
   }
 
@@ -112,6 +104,14 @@ void SdStore::tryMount(uint32_t nowMs) {
   dataSize_ = fs_.fileSize(dataPath_);
   logSize_ = fs_.fileSize(logPath_);
 
+  uint64_t total = 0;
+  uint64_t free = 0;
+  if (fs_.space(total, free)) {
+    totalBytes_ = total;
+    freeBytes_ = free;
+    smallCard_ = total < kMinCardBytes;
+  }
+
   const bool first = !everMounted_;
   everMounted_ = true;
   state_ = State::Mounted;
@@ -120,7 +120,11 @@ void SdStore::tryMount(uint32_t nowMs) {
   janitorAtMs_ = nowMs;  // check the free space right away
   health_.reportSuccess(healthId_, clock_.nowUtc());
   if (first) copyLogRing();  // the boot log so far
-  LOGI(kTag, "card mounted: %s, %s", dataPath_, logPath_);
+  LOGI(kTag, "card mounted (%lu MB): %s, %s", static_cast<unsigned long>(totalBytes_ >> 20), dataPath_, logPath_);
+  if (smallCard_) {
+    LOGW(kTag, "card has only %lu MB; the hardware has at least 4 GB: wrong card?",
+         static_cast<unsigned long>(totalBytes_ >> 20));
+  }
 }
 
 void SdStore::fail(const char* what, uint32_t nowMs) {
@@ -138,7 +142,8 @@ void SdStore::fail(const char* what, uint32_t nowMs) {
 }
 
 void SdStore::onMeasurement(const Measurement& m) {
-  if (state_ == State::Off || !everMounted_) return;
+  // Also buffered before the first mount: the card is always there, it may just take a retry.
+  if (state_ == State::Off) return;
   char line[storagefmt::kMaxLineLen];
   const size_t n = storagefmt::formatMeasurement(m, line, sizeof(line));
   if (n == 0) return;
@@ -259,7 +264,7 @@ void SdStore::tick(uint32_t nowMs) {
       fs_.setTime(clock_.nowUtc());  // correct file timestamps from now on
       timeSet_ = true;
     }
-    if (!syncMarked_ && everMounted_) {
+    if (!syncMarked_) {
       char marker[storagefmt::kMaxLineLen];
       uint32_t utc = 0;
       const uint32_t up = clock_.uptimeS();
@@ -380,6 +385,7 @@ SdStore::Status SdStore::status() const {
   }
   s.writeErrors = writeErrors_;
   s.full = full_;
+  s.smallCard = smallCard_;
   strncpy(s.dataFile, dataPath_, sizeof(s.dataFile) - 1);
   strncpy(s.logFile, logPath_, sizeof(s.logFile) - 1);
   return s;
