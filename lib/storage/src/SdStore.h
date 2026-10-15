@@ -19,9 +19,10 @@
 //   log line to /logs (see StorageFormat.h for names and formats).
 // - Writes are collected in small RAM buffers and flushed every few seconds, so the main loop
 //   isn't blocked by every single SD access. Up to one flush interval can be lost on a crash.
-// - The card is optional: without one (config "sd": "auto") the box simply measures without
-//   history. A card that fails or is removed is unmounted, powered off and retried with backoff;
-//   measurements arriving meanwhile are kept while they fit into the buffer.
+// - The card is a fixed part of the hardware (at least 4 GB). Not finding it, or a card that fails,
+//   is a hardware fault (health ERROR): it is unmounted, powered off and retried with backoff;
+//   measurements arriving meanwhile (also before the first mount) are kept while they fit into
+//   the buffer. Everything else keeps running.
 // - The janitor (Janitor.h) keeps the card from overflowing by deleting the oldest files.
 //
 // Threading: everything runs in the main loop, except write(LogLine), which may come from any
@@ -46,7 +47,7 @@ class SdStore : public MeasurementSink, public LogSink {
   };
 
   struct Status {
-    bool enabled;
+    bool enabled;  // false only if the buffers couldn't be allocated
     bool mounted;
     uint64_t totalBytes;  // as of the last janitor run
     uint64_t freeBytes;
@@ -55,6 +56,7 @@ class SdStore : public MeasurementSink, public LogSink {
     uint32_t droppedLogLines;
     uint32_t writeErrors;
     bool full;
+    bool smallCard;  // smaller than the 4 GB the hardware is specified with
     char dataFile[storagefmt::kPathLen];
     char logFile[storagefmt::kPathLen];
   };
@@ -64,12 +66,16 @@ class SdStore : public MeasurementSink, public LogSink {
   SdStore(const SdStore&) = delete;
   SdStore& operator=(const SdStore&) = delete;
 
-  // Allocates the buffers (heap, once) and tries the first mount. Returns false only if the
-  // store is disabled ("sd": "off") or out of memory; a missing card is not an error.
+  // Allocates the buffers (heap, once) and tries the first mount. Returns false only if out of
+  // memory; a missing card is reported to Health and retried.
   bool begin(const Options& options, uint32_t nowMs);
   void tick(uint32_t nowMs);
   // Writes everything buffered now, e.g. right before a restart.
   void flushNow(uint32_t nowMs);
+  // The end of the current log file (flushes first): up to cap-1 bytes, starting at a line
+  // boundary, 0-terminated. The full log lives on the card; RAM only keeps the newest lines.
+  // Returns the length, 0 if the card isn't mounted. Main loop only.
+  size_t readLogTail(uint32_t nowMs, char* buf, size_t cap);
 
   void onMeasurement(const Measurement& m) override;
   void write(const LogLine& line) override;
@@ -119,6 +125,7 @@ class SdStore : public MeasurementSink, public LogSink {
   uint32_t janitorAtMs_ = 0;
   bool cleaning_ = false;
   bool full_ = false;
+  bool smallCard_ = false;
 
   uint64_t totalBytes_ = 0;
   uint64_t freeBytes_ = 0;

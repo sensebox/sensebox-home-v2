@@ -83,6 +83,25 @@ int64_t SdCardFs::fileSize(const char* path) {
   return static_cast<int64_t>(st.st_size);
 }
 
+int64_t SdCardFs::read(const char* path, uint64_t offset, char* buf, size_t len) {
+  if (!mounted_) return -1;
+  char full[64];
+  fullPath(path, full, sizeof(full));
+  FILE* f = fopen(full, "r");
+  if (f == nullptr) return -1;
+  int64_t n = -1;
+  if (fseek(f, static_cast<long>(offset), SEEK_SET) == 0) n = static_cast<int64_t>(fread(buf, 1, len, f));
+  fclose(f);
+  return n;
+}
+
+FILE* SdCardFs::openRead(const char* path) {
+  if (!mounted_) return nullptr;
+  char full[64];
+  fullPath(path, full, sizeof(full));
+  return fopen(full, "r");
+}
+
 uint32_t SdCardFs::fileMtime(const char* path) {
   if (!mounted_) return 0;
   char full[64];

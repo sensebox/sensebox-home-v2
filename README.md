@@ -6,11 +6,12 @@ There is **one firmware for all stations**. Which sensors are connected, how oft
 
 ## Quickstart: HDC1080 only
 
-The smallest setup: one HDC1080 on the MCU S2, no SD card, no WiFi, no LoRaWAN (if a card is inserted, it is used automatically, see [SD card](#sd-card)). The box measures and shows the values on the serial console.
+The smallest setup: one HDC1080 on the MCU S2, no WiFi, no LoRaWAN. The box measures and shows the values on the serial console, and writes them to the [SD card](#sd-card).
 
 **You need:**
 - senseBox MCU S2 with USB cable
 - HDC1080 temperature/humidity sensor on a QWIIC/I2C port
+- microSD card (at least 4 GB, FAT32) in the MCU S2. It is part of the hardware: without it the box still measures, but reports an `sd` error and the LED is red.
 - [PlatformIO](https://platformio.org/) (CLI or the VS Code extension)
 
 **1. Build and flash the development firmware.** The dev build logs every single measurement; the normal build only logs the averages that get uploaded.
@@ -70,7 +71,7 @@ Open the serial monitor at 115200 baud (`pio device monitor`). Commands are one 
 | `config-set uplinks joinEui <hex>` | Set the LoRaWAN JoinEUI (also accepted: `appEui`). Same format as the DevEUI. |
 | `appkey <hex>` | Store the LoRaWAN AppKey: 32 hex digits, MSB first, as in the TTN console. It is stored separately from the config and never printed; `status` only shows `set` or `missing`. |
 | `service-password <password>` | Set the WiFi password of [service mode](#service-mode) (8–63 characters; default `123sensebox`). Stored like the AppKey and never printed by `status` or `config`. |
-| `log` | Print the last 40 log lines. |
+| `log` | Print the end of the log (about the last 40 lines) from the current log file on the SD card. The complete log is on the card (see [SD card](#sd-card)). In service mode, or if the card is unavailable, only the newest 16 lines kept in RAM. |
 | `reboot` | Restart the box into normal operation. Also ends safe mode and service mode. |
 
 Notes:
@@ -117,12 +118,16 @@ Press BOOT only *after* the box has started. Held during power-on or reset, it p
 1. Join the WiFi network `senseBox-…` (the serial number, or the last 6 digits of the MAC address). The password is **`123sensebox`**, unless a different one was set with `service-password` on the serial console. The serial console also shows the network name and password when service mode starts (`*** service mode: WiFi "…", password "…" ***`).
 2. The web page usually opens by itself; otherwise open `http://192.168.4.1/`.
 
-**The web page shows:**
-- the status saved before service mode: overall health, sensors, latest values, LoRaWAN and components
-- settings: station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
-- the complete config as JSON, to edit
-- the log before and during service mode
-- a **Restart into normal mode** button
+**The web page** has, from top to bottom:
+- **Service mode:** the time until service mode closes, and the **Restart into normal mode** button.
+- **Status** (expandable): the status saved before service mode (overview, sensors, last measured values, LoRaWAN, components). It's marked *saved, not live*.
+- **Logs** (expandable):
+  - **Most recent logs:** the last lines logged before service mode, with a **Download** button.
+  - **Log files on the SD card:** list the newest 40 and download them. The card is read only when you press **Show log files**, and the newest file is marked.
+- **Settings** (expandable):
+  - station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
+  - the complete config as JSON, to edit
+- **Firmware update**, see [Firmware update (OTA)](#firmware-update-ota).
 
 Changes are stored immediately and take effect after the restart.
 
@@ -139,14 +144,43 @@ The web page uses a small REST API, which tools can use too:
 | Request | What it does |
 |---|---|
 | `GET /api/status` | service-mode info (network, clients, time until timeout, memory) and the saved status |
-| `GET /api/log` | log lines before and during service mode |
+| `GET /api/log` | the log lines saved before service mode (`before`) |
 | `GET /api/config` | stored config (no secrets), whether the AppKey is set, whether a restart is pending |
 | `POST /api/config` | store a complete config (JSON body) |
 | `POST /api/config/field` | `{"field": "name" \| "uplinks.devEui" \| "uplinks.joinEui", "value": "…"}` |
 | `POST /api/appkey` | `{"appKey": "<32 hex digits>"}` |
 | `POST /api/reboot` | restart into normal operation |
+| `POST /api/ota` | firmware update: the `.bin` file as `multipart/form-data`, e.g. `curl -F firmware=@firmware.bin http://192.168.4.1/api/ota` |
+| `GET /api/sdlogs` | log files on the SD card (newest 40: name and size), card size and free space |
+| `GET /api/sdlogs/file?name=B000042-0001.log` | download one log file |
+
+The SD card is not in use in service mode. Only during one of the `/api/sdlogs` requests is it mounted, and it is unmounted right after: it needs about 5–9 KB of RAM, which WiFi needs otherwise. With less than 16 KB free the request is refused (`not enough memory`).
 
 All answers are JSON; errors come as `{"ok": false, "error": "…"}`.
+
+### Firmware update (OTA)
+
+The firmware can be updated over WiFi in service mode, without a USB cable. Settings, keys and the data on the SD card are kept.
+
+1. Build the firmware: `pio run -e mcu_s2`. The file is `.pio/build/mcu_s2/firmware.bin`.
+2. Open service mode, go to **Firmware update**, choose the file and press **Install**.
+
+The box writes the new firmware into its second firmware slot while it uploads. The old firmware stays untouched in the other slot.
+
+**Checked before switching:**
+- **Is it firmware for this board?** It must be an ESP32-S2 image.
+- **Is it this firmware?** Every senseBox:home v2 build contains a marker, `@@SBH2-IMAGE@@ fw=<version> hw=<revisions>;`. A Blockly sketch or another program is refused.
+- **Does it fit the hardware revision?** The board's revision comes from its device identity; every revision is accepted while none is provisioned. The build flag `SBH_HW_COMPAT` sets the list, default `*` = any.
+- **Is the image complete and undamaged?** Checked via its checksum and hash.
+
+If any check fails, the update is refused with a message and nothing changes.
+
+**After the upload** the box restarts into the new firmware, which first has to prove itself. It is kept once it has run normally for **2 minutes**. The box goes back to the previous firmware by itself if, before that:
+- it crashes or hangs (watchdog),
+- it rejects the configuration (e.g. a failed migration), or
+- it is restarted in any way.
+
+During these 2 minutes `status` shows `NEW FIRMWARE: self-test running`, and the BOOT button doesn't open service mode, because the restart would roll the update back. After a rollback, `status` and the web page say that an earlier update was rolled back.
 
 ---
 
@@ -179,7 +213,7 @@ All sections are optional; missing fields use the defaults below. Unknown fields
         { "ch": 6, "slot": 1, "phenomenon": "pm4",   "lpp": "analog_in" }
       ] }
   ],
-  "storage": { "sd": "auto", "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
+  "storage": { "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
   "service": { "apTimeoutMin": 15 },
   "deployment": { "lat": 51.03, "lon": 7.85, "heightAboveGround": 2.5 }
 }
@@ -268,7 +302,6 @@ How sending works:
 
 | Field | Default | Description |
 |---|---|---|
-| `sd` | `"auto"` | `"auto"`: use an SD card if one is inserted; `"off"`: never touch the card. See [SD card](#sd-card). |
 | `lowWatermarkPct` | `10` | The card is never filled beyond 100 − this (default: **90 %**). Below this much free space the oldest files are deleted, whatever their age… |
 | `highWatermarkPct` | `20` | …until this much is free again (%). Must be above `lowWatermarkPct`. |
 | `minRetentionDays` | `30` | Measurement files younger than this are not deleted for the cleanup from 90 % down to 80 %. It never lets the card go above 90 %. Applies only to files whose age is known (written after the first time sync). |
@@ -299,7 +332,9 @@ Every value carries a quality bitmask (`q=0x...` in the log). `0x000` means no r
 
 ## SD card
 
-If a microSD card is inserted and the config has `"storage": {"sd": "auto"}` (the default), the box keeps a **measurement history** and its **log** on the card. Without a card it works the same, just without history. The card is used in normal operation only, not in service or safe mode.
+The microSD card is a **fixed part of the hardware** (at least 4 GB). The box keeps its **measurement history** and its **log** on it. It is used in normal operation only, not in service or safe mode.
+
+A missing or failing card is treated as a hardware fault: health shows an `sd` error and the LED is red. Measuring and sending continue meanwhile, so nothing else stops because of the card.
 
 **Files:** named by boot number and part, because after a power cut the box has no time until the first LoRaWAN time sync.
 
@@ -328,11 +363,12 @@ utc,uptime_s,slot,phenomenon,kind,value,unit,quality
 
 **Buffering:** lines are collected in RAM and written every 15 seconds (sooner when the buffer fills up), so a crash or power cut loses at most the last 15 seconds.
 
-**When the card fails or is removed:**
-- The box keeps measuring.
-- It unmounts the card, switches its power off and tries again after 2 s, then 30 s, 60 s, … up to every 10 minutes.
-- Measurements arriving meanwhile are kept in RAM while they fit (about 30 lines), then counted as dropped.
-- A card inserted later is found by the same periodic check.
+**When the card is missing, fails or is removed:**
+- The box keeps measuring and sending.
+- It unmounts the card, switches its power off and tries again after 2 s, then 30 s, 60 s, … up to every 10 minutes (a missing card at boot: first retry after 30 s).
+- Measurements arriving meanwhile, also before the card was mounted the first time, are kept in RAM while they fit (about 30 lines), then counted as dropped.
+- A reseated card is found by the same periodic check.
+- A card smaller than 4 GB is used, but `status` and the log warn about it.
 - `status` on the console shows the card, the free space and the counters. The `sd` line under health shows the last error.
 
 **Janitor (overflow protection):**
@@ -340,11 +376,11 @@ utc,uptime_s,slot,phenomenon,kind,value,unit,quality
 - **Never more than 90 % full** (`lowWatermarkPct`): above that, the oldest files are deleted, whatever their age. Old logs go first, then the oldest measurement files.
 - **Cleanup down to 80 %** (`highWatermarkPct`): deleting continues until 20 % is free again, so it doesn't happen file by file. Measurement files younger than `minRetentionDays` are kept for this part.
 - **Never deleted:** the files currently being written, and files that don't follow the naming scheme (your own files are safe).
-- **Over 90 % anyway:** this only happens if the files currently being written fill the card. Health then shows `card over 90 % full` and the LED flashes red.
+- **Over 90 % anyway:** this only happens if the files currently being written fill the card. Health then shows `card over 90 % full` and the LED is red.
 
 The check runs after mounting and every 10 minutes. Each deleted file is logged.
 
-**Card format:** FAT32 (SDHC; 4 GB is plenty: about 0.6 MB of measurements per day for the Olpe setup).
+**Card format:** FAT32 (SDHC). 4 GB is plenty: about 0.6 MB of measurements per day for the Olpe setup, so the card holds years of history before the janitor starts deleting.
 
 ---
 
@@ -392,5 +428,7 @@ PlatformIO environments:
 | `mcu_s2` | Release firmware. |
 | `mcu_s2_dev` | Debug logging; uses [config/olpe-template.json](config/olpe-template.json) when no config is stored. |
 | `native` | Unit tests on the PC: `pio test -e native` |
+
+Every device build ends with `scripts/check_image.py`, which fails the build if the OTA image marker or the rollback hook is missing from the image.
 
 Code layout and the rules for contributing are in [implementation-docs/CLAUDE.md](implementation-docs/CLAUDE.md).

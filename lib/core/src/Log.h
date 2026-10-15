@@ -31,8 +31,10 @@ class LogSink {
 
 namespace logger {
 
-// No PSRAM: every KB of internal RAM counts (WiFi needs ~40 KB free heap in service mode).
-constexpr size_t kRingLines = 40;
+// Only the newest lines stay in RAM (no PSRAM): for the boot lines before the SD card is mounted,
+// the status snapshot of service mode and the log view in service mode (which runs without the
+// card). The complete log is on the SD card (SdStore).
+constexpr size_t kRingLines = 16;
 constexpr size_t kMaxSinks = 3;
 
 using UptimeMsFn = uint64_t (*)();

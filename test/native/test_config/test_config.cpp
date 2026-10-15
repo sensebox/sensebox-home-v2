@@ -258,6 +258,13 @@ void test_example_configs_decode() {
   }
 }
 
+void test_removed_sd_switch_is_rejected() {
+  const char* json = "{\"schemaVersion\":1,\"storage\":{\"sd\":\"auto\"}}";
+  const DecodeResult r = decode(json, strlen(json), g_cfg);
+  TEST_ASSERT_FALSE(r.ok);
+  TEST_ASSERT_NOT_NULL(strstr(r.error, "storage.sd"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_olpe_template_decodes);
@@ -267,6 +274,7 @@ int main() {
   RUN_TEST(test_migration_chain);
   RUN_TEST(test_migration_errors);
   RUN_TEST(test_decode_uses_migrations);
+  RUN_TEST(test_removed_sd_switch_is_rejected);
   RUN_TEST(test_readme_examples_decode);
   RUN_TEST(test_example_configs_decode);
   return UNITY_END();

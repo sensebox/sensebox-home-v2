@@ -23,6 +23,7 @@
 #include "PersistentStore.h"
 #include "Pipeline.h"
 #include "SdCardFs.h"
+#include "SelfTest.h"
 #include "SdStore.h"
 #include "SensorManager.h"
 #include "SerialConsole.h"
@@ -32,6 +33,7 @@
 #include "StatusCapture.h"
 #include "StatusLed.h"
 #include "SystemInfo.h"
+#include "Updater.h"
 #include "Version.h"
 
 #if SBH_DEV_BUILD
@@ -84,11 +86,13 @@ CayenneUplink* g_cayenne = nullptr;  // created at setup if configured
 SdCardFs g_sdCard;
 SdStore g_sd(g_sdCard, g_clock, g_health);
 SinkFanout g_windowMeans;  // 10-min means of the uplink: log + SD card
+SelfTest g_selfTest;       // after an OTA update: keep the new firmware or roll back
+updater::RunningInfo g_running{};
 
 StatusLed g_led;
 ButtonDetector g_button;
 BootGuard g_bootGuard;
-App g_app{g_clock, g_health, g_config, g_sensors, g_lora, g_sd, false, false};
+App g_app{g_clock, g_health, g_config, g_sensors, g_lora, g_sd, g_selfTest, false, false};
 SerialConsole g_console(g_app);
 ServiceMode g_service;
 
@@ -192,10 +196,41 @@ void enterServiceMode(uint32_t nowMs) {
   ESP.restart();
 }
 
+bool configAccepted() {
+  ComponentHealth h;
+  return !g_health.get(g_configHealth, h) || h.status != ComponentStatus::Error;
+}
+
+// After an OTA update (plan §4.9): keep the new firmware once it has run 2 min, or roll back.
+void runSelfTest(uint32_t nowMs) {
+  switch (g_selfTest.tick(nowMs, configAccepted())) {
+    case SelfTest::Result::Passed:
+      if (updater::markValid()) {
+        LOGI("ota", "new firmware %s passed the self-test and is kept", SBH_FW_VERSION);
+      } else {
+        LOGE("ota", "could not mark the firmware as valid");
+      }
+      break;
+    case SelfTest::Result::Failed:
+      LOGE("ota", "self-test failed (configuration rejected): going back to the previous firmware");
+      g_sd.flushNow(nowMs);
+      Serial.flush();
+      updater::rollback();
+      break;
+    default: break;
+  }
+}
+
 // BOOT held >= 3 s: the LED turns purple, and the restart happens when the button is released.
 // Restarting while GPIO0 (a strapping pin) is still held could start the ROM download mode.
 void handleButton(uint32_t nowMs) {
   if (g_button.update(board::serviceButtonPressed(), nowMs) == ButtonDetector::Event::LongPress) {
+    if (g_selfTest.running()) {
+      // A restart now would roll the fresh update back.
+      LOGW(kTag, "firmware update is being checked: service mode available in %lu s",
+           static_cast<unsigned long>(g_selfTest.secondsLeft(nowMs)));
+      return;
+    }
     g_serviceRequested = true;
     g_led.setMode(StatusLed::Mode::ServiceMode);
     LOGI(kTag, "service mode requested: release the button");
@@ -219,6 +254,7 @@ void startServiceMode() {
   options.running = &g_config;
   options.snapshot = haveSnapshot ? &snap : nullptr;
   options.deviceSerial = id.serial;
+  options.boardRevision = id.hardware;
   options.apTimeoutMin = g_config.service.apTimeoutMin;
   if (!g_service.begin(options)) {
     LOGE(kTag, "service mode could not start; console still works, 'reboot' to return to normal mode");
@@ -241,6 +277,10 @@ void setup() {
   g_led.begin();
 
   LOGI(kTag, "senseBox:home v2 firmware %s, reset reason: %s", SBH_FW_VERSION, sysinfo::resetReason());
+  g_running = updater::bootInfo();
+  LOGI(kTag, "running from %s%s", g_running.partition, g_running.pendingVerify ? ", NEW FIRMWARE: self-test running" : "");
+  LOGD(kTag, "image marker: %s", g_running.marker);
+  if (g_running.previousRolledBack) LOGW("ota", "an earlier firmware update was rolled back");
   if (sysinfo::previousBreadcrumb()[0] != '\0') LOGW(kTag, "previous run stopped in: %s", sysinfo::previousBreadcrumb());
 
   // One-shot: consumed now, so any later restart is a normal start again.
@@ -259,6 +299,10 @@ void setup() {
   }
 
   loadConfig();
+
+  // The self-test runs in normal (and safe) mode. A fresh update that starts in service mode is
+  // rolled back by the next restart, because nothing marks it valid.
+  g_selfTest.begin(g_running.pendingVerify && !g_app.serviceMode);
 
   if (g_app.serviceMode) {
     startServiceMode();
@@ -308,6 +352,7 @@ void loop() {
   if (g_app.serviceMode) {
     // Nothing of normal operation runs; the BOOT button is ignored (leave by restarting).
     g_service.loop(nowMs);
+    if (Serial.available() > 0) g_service.markActivity();
     g_console.poll(nowMs);
     g_led.tick(nowMs, g_health.overall());
     vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));
@@ -325,6 +370,7 @@ void loop() {
     LOGI(kTag, "healthy for %lu min, boot counter reset", static_cast<unsigned long>(BootGuard::kHealthyAfterMs / 60000));
   }
 
+  runSelfTest(nowMs);
   handleButton(nowMs);
   g_console.poll(nowMs);
   g_led.tick(nowMs, g_health.overall());

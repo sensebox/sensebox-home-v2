@@ -10,6 +10,7 @@
 #include "PersistentStore.h"
 #include "ServicePassword.h"
 #include "SystemInfo.h"
+#include "Updater.h"
 #include "Version.h"
 
 namespace {
@@ -97,7 +98,7 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     Serial.println("  config-set uplinks joinEui <hex>   LoRaWAN JoinEUI / AppEUI");
     Serial.println("  appkey <32 hex>                    store the LoRaWAN AppKey (MSB first); never printed");
     Serial.println("  service-password <password>        WiFi password of service mode (8-63 characters)");
-    Serial.println("  log                                print the recent log lines");
+    Serial.println("  log                                print the end of the log (from the SD card)");
     Serial.println("  reboot                             restart into normal mode (also leaves safe/service mode)");
     Serial.println("config-set and appkey apply after 'reboot'. Service mode: hold BOOT for 3 s, then release.");
   } else if (strcmp(line, "status") == 0) {
@@ -113,12 +114,13 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     printResult(ok, err, "ok: service-mode password stored");
     if (ok) LOGI("console", "service-mode password changed");
   } else if (strcmp(line, "log") == 0) {
-    printLog();
+    printLog(nowMs);
   } else if (strcmp(line, "reboot") == 0) {
     // A requested reboot is a normal start: it never counts as a crash, ends safe mode, and
     // (the service-mode request being one-shot) also ends service mode.
     persist::saveUnhealthyBoots(0);
     app_.storage.flushNow(nowMs);  // don't lose the last seconds of log/measurements
+    if (app_.selfTest.running()) Serial.println("note: the new firmware hasn't passed its self-test yet, so it is rolled back");
     Serial.println(app_.serviceMode ? "rebooting into normal mode" : (app_.safeMode ? "rebooting, leaving safe mode" : "rebooting"));
     Serial.flush();
     delay(100);
@@ -135,6 +137,14 @@ void SerialConsole::printStatus(uint32_t nowMs) {
                 sysinfo::previousBreadcrumb()[0] ? ", last at " : "", sysinfo::previousBreadcrumb());
   Serial.printf("heap: free %lu, min %lu, largest block %lu\n", static_cast<unsigned long>(sysinfo::freeHeap()),
                 static_cast<unsigned long>(sysinfo::minFreeHeap()), static_cast<unsigned long>(sysinfo::largestFreeBlock()));
+  const updater::RunningInfo fw = updater::bootInfo();
+  Serial.printf("firmware slot: %s", fw.partition);
+  if (app_.selfTest.running()) {
+    Serial.printf(", NEW FIRMWARE: self-test running (%lu s left; restarting before that rolls back)",
+                  static_cast<unsigned long>(app_.selfTest.secondsLeft(nowMs)));
+  }
+  if (fw.previousRolledBack) Serial.print(", an earlier update was rolled back");
+  Serial.println();
 
   if (app_.serviceMode) {
     // Sensors and LoRaWAN don't run; show the status saved before the restart.
@@ -183,13 +193,13 @@ void SerialConsole::printStatus(uint32_t nowMs) {
 
   const SdStore::Status sd = app_.storage.status();
   if (!sd.enabled) {
-    Serial.println("sd: off in config");
+    Serial.println("sd: not used (out of memory at boot)");
   } else if (!sd.mounted) {
-    Serial.println("sd: no card / not mounted (see the 'sd' health line)");
+    Serial.println("sd: NOT MOUNTED - the card is part of the hardware; see the 'sd' health line");
   } else {
-    Serial.printf("sd: %s, %lu of %lu MB free, writing %s and %s\n", sd.full ? "FULL" : "ok",
+    Serial.printf("sd: %s, %lu of %lu MB free%s, writing %s and %s\n", sd.full ? "FULL" : "ok",
                   static_cast<unsigned long>(sd.freeBytes >> 20), static_cast<unsigned long>(sd.totalBytes >> 20),
-                  sd.dataFile, sd.logFile);
+                  sd.smallCard ? " (smaller than 4 GB!)" : "", sd.dataFile, sd.logFile);
   }
   if (sd.enabled) {
     Serial.printf("    files deleted %lu, write errors %lu, dropped measurements %lu, dropped log lines %lu\n",
@@ -248,8 +258,21 @@ void SerialConsole::configSet(char* arg) {
               "ok: stored, reboot to apply (see 'config' for the stored values)");
 }
 
-void SerialConsole::printLog() {
-  // Printed one line at a time: no buffer for the whole log (RAM is short).
+void SerialConsole::printLog(uint32_t nowMs) {
+  // Normal operation: the end of the log file on the SD card (the complete log is there).
+  if (!app_.serviceMode) {
+    constexpr size_t kTailBytes = 4096;  // ~40 lines; per call, freed afterwards
+    auto buf = sysinfo::makeTempBuffer(kTailBytes);
+    const SdStore::Status sd = app_.storage.status();
+    if (buf && app_.storage.readLogTail(nowMs, buf.get(), kTailBytes) > 0) {
+      Serial.printf("--- end of %s (complete log on the SD card) ---\n", sd.logFile);
+      Serial.print(buf.get());
+      return;
+    }
+    Serial.println(buf ? "--- SD card not available: newest lines from RAM only ---"
+                       : "--- out of memory: newest lines from RAM only ---");
+  }
+  // Service mode (no SD card) or no card: the newest lines kept in RAM, one line at a time.
   LogLine line;
   for (size_t age = logger::lineCount(); age > 0; --age) {
     if (!logger::lineAt(age - 1, line)) continue;

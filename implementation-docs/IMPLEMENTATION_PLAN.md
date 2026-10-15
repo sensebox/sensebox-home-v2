@@ -14,11 +14,11 @@ Inputs:
 ## 1. Goals
 
 1. **One firmware, many stations.** A single build runs on every senseBox:home v2 (MCU S2). The sensors, intervals, storage and data targets are set by **configuration**. Build-time templates (the `@@SENSOR_IDS@@` approach in `old/`) go away.
-2. **First customer: Olpe.** About 50 outdoor stations with temperature/humidity (Adafruit AM2315C, an encased AHT20 probe) and fine particulates (SPS30). They upload over **LoRaWAN (TTN) with Cayenne LPP** to the openSenseMap through the TTN integration, with an SD card in every box and mains power.
+2. **First customer: Olpe.** About 50 outdoor stations with temperature/humidity (Adafruit AM2315C, an encased AHT20 probe) and fine particulates (SPS30). They upload over **LoRaWAN (TTN) with Cayenne LPP** to the openSenseMap through the TTN integration, with an SD card (fixed part of the hardware) and mains power.
 3. **Easy to extend afterwards.** These should be additions, not rewrites:
    - new sensors (SCD30, RG-15, SMT50, …)
    - new paths: WiFi → openSenseMap HTTP, Ethernet, custom HTTP/MQTT targets
-   - an SD-only mode
+   - a station without data target that only records to its SD card
 
 The plan sorts the work into an **Olpe MVP** (everything in phases 0–7) and **follow-up work** (phase 8+). The architecture is designed for the whole picture from the start.
 
@@ -27,7 +27,7 @@ The plan sorts the work into an **Olpe MVP** (everything in phases 0–7) and **
 | Topic | Decision | Effect on the plan |
 |---|---|---|
 | LoRaWAN network | **TTN** | OSeM TTN integration with the `cayenne-lpp` profile can be used directly |
-| SD card | **present in every Olpe box** | SD is the primary store; the RAM ring is only a fallback for card failure |
+| SD card | **fixed part of the hardware**, always present (decision 2026-10-15; before: optional) | SD is the primary store; a missing or failing card is a hardware fault (health ERROR), measuring and sending continue; no `storage.sd` switch |
 | Temp/humidity sensor | **AM2315C** ([Adafruit 5182](https://www.adafruit.com/product/5182), AHT20 inside), replacing the SHT45 | AHT20 driver in the Olpe release; SHT4x and HDC1080 drivers move to phase 8 (§6, "AM2315C") |
 | Power | **mains** | no deep sleep, continuous SPS30 operation, the system clock runs continuously between syncs |
 | Intervals | **measure every 60 s, upload every 10 min** | defaults in the config |
@@ -38,7 +38,7 @@ The plan sorts the work into an **Olpe MVP** (everything in phases 0–7) and **
 | Profiles | **none**; a single behaviour | config is authoritative, auto-detection only helps (§4.3) |
 | Time sync interval | **every 72 h** (plus after every join) | §6.1 |
 | PM values to OSeM | **all four** (PM1, PM2.5, PM4, PM10) | 23 B Cayenne frame (§6) |
-| SD card | **4 GB** | room for decades of Olpe data; overflow protection still required (§4.5.1) |
+| SD card size | **at least 4 GB** (decision 2026-10-15) | room for years of Olpe data; overflow protection still required (§4.5.1); a smaller card is used but flagged |
 | Pin map | [requirements/pins_senseBox_MCUS2.h](requirements/pins_senseBox_MCUS2.h) | board layer (§4.7.1) |
 | `IO_ENABLE` | **not used for now** | sensor recovery is I2C bus recovery only |
 | PM > 327.67 µg/m³ | **clamp** (`analog_in`) | flagged; full value on SD |
@@ -60,7 +60,11 @@ Done (builds for the MCU S2; 46 native unit tests pass; **not yet run on hardwar
 
 - Phase 3, SD card (2026-10-14; not yet run on hardware): measurement history (CSV) and log files per boot, buffered writes, unmount/power-cycle/retry on errors, hot-plug, janitor with watermarks, log cap and retention (`lib/storage`, `lib/sdcard`, §4.5). Not done: RAM record store and uplink outbox (only needed for a catch-up uplink, i.e. HTTP in phase 8), file download in service mode.
 
-Not done yet: phase 6 (OTA), phase 7, `tools/` scripts, on-device tests.
+- Phase 6, OTA (2026-10-15; not yet run on hardware): upload in service mode (web UI, `POST /api/ota`), streamed into the other app slot; checks: ESP32-S2 image, image marker (this firmware), hardware revision, image hash; self-test (2 min normal operation + config accepted) with automatic rollback (`lib/ota`, `lib/updater`, §4.9). Not done (decision 2026-10-15): signatures, anti-downgrade.
+
+- Main loop at 10 Hz (100 ms, fixed rate) instead of ~100 Hz (decision 2026-10-15). Time-critical LoRaWAN timing stays in the LMIC task; the serial console reads all waiting input per pass; in service mode each HTTP request may wait up to 100 ms before it is handled.
+
+Not done yet: phase 7, `tools/` scripts, on-device tests.
 
 Findings during implementation:
 - The stock `sensebox_mcu_esp32s2` board variant blocks 5 s at boot and switches the boot partition to `ota_1` if BOOT is pressed. With our partition table that would bypass OTA rollback, so the firmware uses its own variant (`variants/sensebox_home_v2`) without it.
@@ -68,7 +72,7 @@ Findings during implementation:
 - Adafruit AHTX0's `getEvent()` / `begin()` busy-wait without an upper bound. Mitigated by a presence check before each measurement; a sensor vanishing mid-measurement still ends in a watchdog reset.
 - SF12 airtime for the 23 B frame is ~2.0 s (the first draft said ~1.5 s).
 - **Web server:** the framework's synchronous `WebServer` is used instead of ESPAsyncWebServer. It is polled from the main loop, so request handlers can use config/health/clock without locks, and it needs no extra libraries. WebSocket live values (phase 8) will need a different server or a small WebSocket add-on.
-- **Internal RAM is the tightest resource.** On the ESP32-S2 static data shares 168 KB with code that must run from internal RAM; linking WiFi takes ~87 KB of it, and WiFi needs another ~40 KB of free heap at runtime (with only 10 KB free, WPA2 handshakes failed silently while open networks worked). Rules since then: permanent buffers stay small (log ring 40 lines); working buffers for console commands, config edits and web requests are allocated per call and freed (`sysinfo::makeTemp` / `makeTempBuffer`). Service mode warns in the log below 30 KB free. Measured on a board without PSRAM (2026-10-14): 32 KB free with the AP up, 15 KB after one notebook connected, then a crash on the first HTTP requests. Fixes: no mDNS, captive DNS polled in the main loop instead of the AsyncUDP task, max. 2 clients, smaller serial RX buffer, config decode scratch on the heap only while decoding. Static data headroom after phase 5: ~9.3 KB (code + static data use 162 of 168 KB). Phases 3 and 6 must budget their RAM explicitly.
+- **Internal RAM is the tightest resource.** On the ESP32-S2 static data shares 168 KB with code that must run from internal RAM; linking WiFi takes ~87 KB of it, and WiFi needs another ~40 KB of free heap at runtime (with only 10 KB free, WPA2 handshakes failed silently while open networks worked). Rules since then: permanent buffers stay small (log ring 16 lines since 2026-10-15; the full log is on the SD card); working buffers for console commands, config edits and web requests are allocated per call and freed (`sysinfo::makeTemp` / `makeTempBuffer`). Service mode warns in the log below 30 KB free. Measured on a board without PSRAM (2026-10-14): 32 KB free with the AP up, 15 KB after one notebook connected, then a crash on the first HTTP requests. Fixes: no mDNS, captive DNS polled in the main loop instead of the AsyncUDP task, max. 2 clients, smaller serial RX buffer, config decode scratch on the heap only while decoding. Static data headroom after phase 5: ~9.3 KB (code + static data use 162 of 168 KB). Phases 3 and 6 must budget their RAM explicitly.
 - The firmware's partition table replaces the stock senseBox TinyUF2 layout: no **TinyUF2** (USB drag-and-drop flashing) and no **APOTA** (open-AP fallback updater in `ota_1`). APOTA accepts any image without checks and would bypass rollback; TinyUF2 costs 256 KB and brings its own bootloader. Flashing is via esptool/PlatformIO; updates in the field come with our own OTA (phase 6). If a DIY/education variant needs drag-and-drop flashing later, TinyUF2 can be added back as a partition (smaller app slots; its bootloader must then be checked for rollback support). Restoring a board to the stock layout needs esptool (files in the framework's `variants/sensebox_mcu_esp32s2/`).
 
 ---
@@ -263,7 +267,7 @@ class IRecordStore {                    // append-only log of Measurement record
 - *Not implemented:* **RamRecordStore**: without PSRAM only a few hundred records fit; the SD write buffer bridges short outages, and LoRaWAN doesn't catch up anyway (§6.2).
 - **Outbox:** each uplink keeps its own **cursor** (last acknowledged sequence number), persisted in NVS (written rarely, e.g. every N records, to protect flash). After a reconnect the uplink catches up from its cursor. This gives store-and-forward per target, and several targets can run independently at different speeds.
 - **SD full:** see §4.5.1.
-- **Hot-plug:** SD presence is re-checked periodically. A missing card produces a warning, not a failure.
+- **The card is a fixed part of the hardware (decision 2026-10-15), at least 4 GB.** Not finding it, or a card that fails, is a hardware fault: health `ERROR` (LED red). Measuring and sending continue; measurements are buffered in RAM from boot on (also before the first mount) and the card is retried with backoff, so a reseated card is picked up again. A card smaller than 4 GB is used but flagged in `status` and the log. There is no config switch for the card: `storage.sd` was removed (changed in place, no migration: no stations in the field yet, decision 2026-10-15).
 - No secrets ever go on the SD card (decision by Jan).
 
 #### 4.5.1 SD overflow protection (deleting old records)
@@ -294,7 +298,7 @@ The original design follows for reference.
 - **Low watermark:** free space < 10 % of the card or < 200 MB, whichever is larger. When reached, the `SdJanitor` deletes the **oldest whole day files**: logs first, then measurement files. It stops at the high watermark.
 - **High watermark:** free space ≥ 20 %.
 - **Order within measurements:** files that every uplink has already sent are deleted first. For LoRa this is always the case, because it doesn't catch up (§6.2). So "acknowledged" only matters for the future HTTP uplink.
-- **Never deleted:** today's file, and any file younger than a configurable minimum age (default 30 days). If even that isn't enough space, recording continues in the RAM ring and the status becomes `ERROR: SD full`.
+- **Never deleted:** today's file, and any file younger than a configurable minimum age (default 30 days). If even that isn't enough space, recording continues in the RAM ring and the status becomes `ERROR: SD full`. *(First design; see "Implemented janitor" above.)*
 
 **When it runs:**
 - the janitor runs at boot, once per hour, and immediately on any write error that looks like "disk full" (`ENOSPC`)
@@ -329,7 +333,7 @@ Data **target** and **transport** are separate:
 - `OsemHttpUplink` → uses `IpConnectivity` (WiFi now, Ethernet later) + `OsemCsvEncoder` (same CSV format `sensorId,value[,timestamp]` as home v1, sent with an `Authorization` token header).
 - `NoUplink`: an explicitly valid configuration (**SD-only station**).
 
-**Answer to the open question "what if no connection is configured?":** that is a valid state. The station measures and stores (SD if present, otherwise the RAM ring). The status LED and web UI show "no data target configured". There is no hidden default target.
+**Answer to the open question "what if no connection is configured?":** that is a valid state. The station measures and stores on its SD card (always present). The status LED and web UI show "no data target configured". There is no hidden default target.
 
 Several uplinks can be active at once (e.g. LoRa + WiFi in the future). Each has its own outbox cursor.
 
@@ -337,8 +341,8 @@ Several uplinks can be active at once (e.g. LoRa + WiFi in the future). Each has
 - **Config** (see §5)
 - **Logger:**
   - `LOGI("sps30", "fan cleaning started")`, with levels E/W/I/D and module tags
-  - output to Serial (if enabled) and a static **RAM ring buffer** (e.g. last 200 lines / 16 KB)
-  - optional `/logs/YYYY-MM-DD.log` on SD with size-based rotation
+  - output to Serial (if enabled) and a small static **RAM ring buffer** (implemented: last 16 lines, ~2 KB; decision 2026-10-15: the log lives on the SD card, RAM only bridges the time before the card is mounted, the status snapshot and service mode). Console `log` reads the end of the current log file from the card
+  - `/logs/B<boot>-<part>.log` on the SD card with size-based rotation (§4.5)
   - errors and warnings also go to a small persistent "last 20 errors" list in NVS
   - logs can be read via REST and are part of the diagnostic report
 - **Clock:** UTC internally. Time sources by priority:
@@ -400,21 +404,30 @@ Also new compared to home v1: the MCU S2 has a radio **reset** pin (38) and a po
 - **Entering:** **BOOT button (GPIO0)** held ≥ 3 s while the firmware runs (normal or safe mode). The LED turns purple; the snapshot is taken and the box restarts **when the button is released**, because restarting while GPIO0 is still held could start the ROM download mode. The request is one-shot (RTC memory), so the following boot is service mode and every later boot is normal.
   - ⚠️ GPIO0 is a strapping pin: if it is held **while the board powers up or resets**, the ESP32-S2 enters the ROM download (flashing) mode instead of starting the firmware. The user guide must say "press *after* the box has started". Firmware reads it with the internal pull-up and debounces in software; it must never be driven as an output.
 - **Leaving (decision 2026-10-14):** any restart: the "Restart into normal mode" button in the web UI, `reboot` on the console, a power cycle, or the inactivity timeout. The BOOT button does nothing in service mode.
-- **Access point:** `senseBox-<serial>` (or `senseBox-<last 3 MAC bytes>` without device identity), WPA2, max. 2 clients. The password defaults to `123sensebox` (decision 2026-10-14); a different one can be set with the console command `service-password` (stored as a secret in NVS, never shown in the web UI or the log). The default is not written to NVS, so a later firmware can change it for every box without its own password. The AP is **time-limited**: it closes (restart into normal mode) after `service.apTimeoutMin` (default 15) minutes without HTTP requests and without a connected client. A captive DNS (polled in the main loop, no extra task) makes phones open the UI; it is also at `http://192.168.4.1/`. No mDNS (`sensebox.local`): it costs ~6 KB of internal RAM.
-- **UI (offline, embedded, no CDNs/external fonts):** one page, `web/index.html` (plain HTML/CSS/JS), embedded into the firmware at build time. Sections: service-mode banner with restart button and timeout, status before service mode (overview, sensors, latest values, LoRaWAN, components), settings (name, DevEUI, JoinEUI, AppKey write-only), the full config as JSON, log before and during service mode.
+- **Access point:** `senseBox-<serial>` (or `senseBox-<last 3 MAC bytes>` without device identity), WPA2, max. 2 clients. The password defaults to `123sensebox` (decision 2026-10-14); a different one can be set with the console command `service-password` (stored as a secret in NVS, never shown in the web UI or the log). The default is not written to NVS, so a later firmware can change it for every box without its own password. The AP is **time-limited**: it closes (restart into normal mode) after `service.apTimeoutMin` (default 15) minutes without activity. Activity = a device joining the AP, page loads, user actions in the web UI (save, reload, upload, …) and console input; a phone that just stays connected, the UI's 30 s status poll and the OS's captive-portal probes do not count (decision 2026-10-15: otherwise a phone left on the AP or a forgotten tab kept service mode open forever). A captive DNS (polled in the main loop, no extra task) makes phones open the UI; it is also at `http://192.168.4.1/`. No mDNS (`sensebox.local`): it costs ~6 KB of internal RAM.
+- **UI (offline, embedded, no CDNs/external fonts):** one page, `web/index.html` (plain HTML/CSS/JS), embedded into the firmware at build time. Layout (2026-10-15), top to bottom: service-mode card (timeout, restart button); expandable **Status** (saved snapshot: overview, sensors, last measured values, LoRaWAN, components); expandable **Logs** (most recent logs from the snapshot, downloadable as text; log files on the SD card); expandable **Settings** (name, DevEUI, JoinEUI, AppKey write-only; full config as JSON); **Firmware update**. Expandable cards are native `<details>` elements. No live log of service mode (decision 2026-10-15: not needed; still on the serial console).
 - **REST API:**
   - `GET /api/status`: service info (SSID, clients, seconds until timeout, heap) + snapshot
-  - `GET /api/log`: log lines before (snapshot) and during service mode
+  - `GET /api/log`: log lines before service mode (snapshot)
   - `GET /api/config`: stored config (no secrets), `appKeySet`, `differsFromRunning`; `POST /api/config`: complete config
   - `POST /api/config/field` `{"field":"name"|"uplinks.devEui"|"uplinks.joinEui","value":"…"}`; `POST /api/appkey` `{"appKey":"…"}`
   - `POST /api/reboot`
   - Later: OTA upload (phase 6), diagnostic report, sensor check, browser time → clock
+- **SD log files (2026-10-15):** the web UI lists the newest 40 log files on the card and downloads them (`GET /api/sdlogs`, `GET /api/sdlogs/file?name=…`). The card is mounted only for the duration of such a request and unmounted afterwards (~5–9 KB heap; refused below 16 KB free), so service mode otherwise keeps its RAM for WiFi. The saved log before service mode can be downloaded as a text file (in the browser, no firmware cost). Not tested on hardware yet: heap during a download with a client connected.
 - **Not implemented yet:** starting service mode by itself when the box is unconfigured or in safe mode; an on-demand sensor check (read each configured sensor once); the diagnostic report download.
 - **USB mass-storage mode** for editing files on the SD card (idea from requirements.md): the ESP32-S2 has native USB, so this is technically possible via TinyUSB MSC. It's deferred: it conflicts with the firmware's own SD access, and the REST/UI path covers the use case.
 
 ### 4.9 OTA with rollback and compatibility check
 - **Path for Olpe:** upload through the service-mode web UI. OTA over LoRaWAN is not realistic with the bandwidth and duty cycle. Remote OTA over WiFi (pull from a release server) is phase 8.
-- **Image metadata:** a custom descriptor struct in the app image holds the firmware version, a **list of compatible hardware revisions**, the minimum config schema version and the signature info. Before switching the boot partition, `OtaManager` checks:
+- **Implemented (2026-10-15)** — signatures and anti-downgrade are deferred (decision 2026-10-15):
+  - **Upload:** service mode, web UI or `POST /api/ota` (multipart). It is streamed with `esp_ota_write` (sequential erase) into the inactive slot.
+  - **Image marker instead of a descriptor struct:** every build contains the text marker `@@SBH2-IMAGE@@ fw=<version> hw=<list>;` (`lib/ota/src/ImageMarker.cpp`, `SBH_HW_COMPAT` build flag). The upload scans the stream for it (KMP scanner, chunk-independent).
+  - **Checks, all before the boot partition is switched:** ESP32-S2 image header; marker present (otherwise "not a senseBox:home v2 firmware"); board hardware revision (from `factory_id`) in `hw`, any revision accepted while unknown; `esp_ota_end()` hash check.
+  - **Self-test (`SelfTest.h`):** keep the image after 2 min of normal operation with the config accepted. Config rejected → explicit rollback; crash/watchdog/any restart before that → the bootloader rolls back. Sensors are deliberately not part of it, so a box with a broken sensor can still be updated.
+  - **During the self-test:** the BOOT button doesn't enter service mode (that restart would roll back).
+  - **Arduino hook:** the core's `verifyRollbackLater()` is overridden (`extern "C"`!).
+  - **Build check:** `scripts/check_image.py` fails the build if the marker or the hook override is missing. Both had been silently missing in a first build: the marker was dropped by the linker, and the hook had C++ linkage.
+- *Original design:* **Image metadata:** a custom descriptor struct in the app image holds the firmware version, a **list of compatible hardware revisions**, the minimum config schema version and the signature info. Before switching the boot partition, `OtaManager` checks:
   1. the signature
   2. that the current hardware revision (from `factory_id`) is in the list
   3. that the image is not older than `minAllowedVersion` (anti-downgrade, configurable)
@@ -447,7 +460,7 @@ Also new compared to home v1: the MCU S2 has a radio **reset** pin (38) and a po
     { "slot": 1, "type": "sps30",  "intervalSec": 60, "mode": "continuous",
       "fanCleaningIntervalDays": 4 }
   ],
-  "storage": { "sd": "auto", "ramBufferRecords": 2000 },
+  "storage": { "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
   "uplinks": [
     { "type": "lorawan-cayenne", "region": "EU868", "intervalSec": 600, "send": "aggregated",
       "channels": [
@@ -520,7 +533,7 @@ TTN Fair Use allows about **30 s of airtime per device per day**. A 23 B payload
 | SF9 | ~270 ms | ~110 | ~13 min |
 | SF12 | ~2.0 s | ~15 | ~96 min |
 
-→ **Measure locally every 60 s and send aggregated means every 10 min by default**, with ADR enabled. The 10 min interval fits the budget up to **SF8**. Boxes that only reach a gateway at SF9 or higher will send less often (about every 13 min at SF9). Checking gateway coverage at the Olpe sites (e.g. TTN Mapper, or a test box) before installation is therefore worthwhile. The uplink interval is configurable. `LoRaWanLink` tracks its own airtime budget and stretches the interval automatically when the SF is high. All raw 60 s values stay on the SD card (if present).
+→ **Measure locally every 60 s and send aggregated means every 10 min by default**, with ADR enabled. The 10 min interval fits the budget up to **SF8**. Boxes that only reach a gateway at SF9 or higher will send less often (about every 13 min at SF9). Checking gateway coverage at the Olpe sites (e.g. TTN Mapper, or a test box) before installation is therefore worthwhile. The uplink interval is configurable. `LoRaWanLink` tracks its own airtime budget and stretches the interval automatically when the SF is high. All raw 60 s values stay on the SD card.
 
 ### 6.0 LMIC integration
 
@@ -645,10 +658,11 @@ Grouped list of the "standard failures" (as requested in olpe-specific.md). Each
 | **Bus/Hardware** | I2C bus hangs (SDA held low) | transaction timeout | bus recovery (9 clocks); if it persists: error state + scheduled reboot |
 | | LoRa radio hangs | no TX-done within timeout | radio reset (pin 38) / XB1 power cycle (pin 41), `LMIC_reset()` + rejoin |
 | | brown-out / power loss | reset reason | log on next boot; data loss bounded by last flush |
-| **Storage** | no SD card | mount fails | RAM ring buffer, warning |
-| | SD removed during operation | write error | remount attempts, fall back to RAM |
-| | SD full | free space check | delete oldest acknowledged data, count drops |
-| | SD corrupt / read-only | write/verify error | warning, RAM fallback, suggest format in UI |
+| **Storage** | no SD card (hardware fault: the card is part of the hardware) | mount fails | `ERROR`, measurements buffered in RAM, retry with backoff |
+| | SD removed during operation | write error | unmount, power-cycle, remount attempts; RAM buffer meanwhile |
+| | SD over 90 % full | free space check | janitor deletes oldest files; `ERROR` if nothing is deletable |
+| | SD corrupt / read-only | write/verify error | `ERROR`, retries; suggest replacing the card |
+| | card smaller than 4 GB | size at mount | used, but flagged in status and log |
 | | NVS full / corrupt | NVS API error | rebuild from backup / defaults → safe mode |
 | **Connectivity** | LoRaWAN join fails / no gateway | join timeout | backoff, keep measuring, queue in outbox |
 | | duty cycle / fair use limit | airtime budget | stretch interval |
@@ -740,7 +754,7 @@ Every phase ends with something running on real hardware. Phases 0–7 make up t
 - [x] SD history + log files, hot-plug, SD power-cycle recovery, janitor overflow protection (§4.5, §4.5.1) (2026-10-14)
 - [ ] Test on hardware: 24 h with card pulled/reinserted, a card filled to the low watermark, mount time of a full 4 GB card (watchdog: 5 s)
 - [ ] Outbox with persisted cursors (only with a catch-up uplink, phase 8)
-- **Exit:** a 24 h run with the SD card pulled and reinserted shows no gaps for the time the card was present, and the RAM buffer covers the outage.
+- **Exit:** a 24 h run with the SD card pulled and reinserted shows no gaps for the time the card was present, the RAM buffer covers short outages, and the missing card is reported as `ERROR`.
 
 ### Phase 4: LoRaWAN Cayenne uplink
 - [ ] `LoRaWanLink` (MCCI LMIC in its own task, queue interface, OTAA with join backoff, EUI byte-order handling, airtime budget, radio reset)
@@ -758,7 +772,9 @@ Every phase ends with something running on real hardware. Phases 0–7 make up t
 - **Exit:** a non-developer can set up LoRa keys and diagnose a pulled sensor from a phone, without a laptop.
 
 ### Phase 6: OTA
-- [ ] OtaManager via web upload, image descriptor with HW compatibility list, signature verification, self-test + rollback, anti-downgrade
+- [x] OTA via web upload, image marker with HW compatibility list, self-test + rollback (2026-10-15)
+- [ ] Test on hardware: update app0 → app1 → app0, a deliberately crashing image rolls back, a foreign .bin is refused, config and SD data survive
+- [ ] Signature verification, anti-downgrade (deferred, decision 2026-10-15)
 - [ ] `tools/sign_firmware.py`, release process in CI
 - **Exit:** a deliberately broken image rolls back by itself, an incompatible image is refused, and config survives the update.
 
