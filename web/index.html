@@ -16,7 +16,7 @@ input,textarea{width:100%;padding:7px 8px;border:1px solid var(--line);border-ra
 textarea{min-height:220px}.row{display:flex;gap:8px}.row input{flex:1}
 button{padding:7px 14px;border:1px solid var(--acc);border-radius:6px;background:var(--acc);color:#fff;font-size:14px;cursor:pointer}
 progress{width:100%;height:14px;margin-top:8px}
-button.sec{background:transparent;color:var(--acc)}.msg{font-size:13px;margin-top:6px;min-height:1.2em}
+button.sec{background:transparent;color:var(--acc)}.msg{font-size:13px;margin-top:6px;min-height:1.2em}.msg button{margin-top:6px}
 pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
 .saved{border:2px dashed var(--mute);border-radius:10px;padding:12px 12px 0;margin-bottom:14px;background:repeating-linear-gradient(135deg,transparent 0 12px,var(--line) 12px 13px)}
 .saved section{opacity:.92}.savedHead{background:var(--card);border-radius:8px;padding:12px 16px;margin-bottom:12px}
@@ -103,17 +103,23 @@ $('saveAppKey').onclick=async()=>{const res=await api('/api/appkey',{appKey:$('a
 $('saveCfg').onclick=async()=>{let txt=$('cfg').value;try{txt=JSON.stringify(JSON.parse(txt));}catch(e){$('cfgMsg').textContent='Error: not valid JSON ('+e.message+')';$('cfgMsg').className='msg error';return;}
  const res=await api('/api/config',txt);show($('cfgMsg'),res,'Saved. Restart to apply.');if(res.ok)loadConfig();};
 $('loadCfg').onclick=loadConfig;$('loadLog').onclick=loadLog;
-$('reboot').onclick=async()=>{if(!confirm('Restart into normal mode? The WiFi access point closes.'))return;await api('/api/reboot',{});$('rebootMsg').textContent='Restarting. You can close this page.';};
+// In-page confirmation: confirm()/alert() do nothing in the iOS captive-portal browser.
+function ask(msg,text,yes,onYes){msg.textContent=text+' ';const y=document.createElement('button'),n=document.createElement('button');
+ y.textContent=yes;n.textContent='Cancel';n.className='sec';n.style.marginLeft='8px';msg.appendChild(document.createElement('br'));msg.appendChild(y);msg.appendChild(n);
+ y.onclick=()=>{msg.textContent='';onYes();};n.onclick=()=>{msg.textContent='';};}
+$('reboot').onclick=async()=>{
+ try{await api('/api/reboot',{});$('rebootMsg').textContent='Restarting. You can close this page.';}
+ catch(e){$('rebootMsg').textContent='No answer from the box. If it does not restart, try again.';}};
 $('fwUpload').onclick=()=>{const f=$('fwFile').files[0],msg=$('fwMsg'),bar=$('fwProgress');
  if(!f){msg.textContent='Choose a firmware file first.';return;}
- if(!confirm('Install '+f.name+' ('+Math.round(f.size/1024)+' KB)? The box restarts afterwards.'))return;
+ ask(msg,'Install '+f.name+' ('+Math.round(f.size/1024)+' KB)? The box restarts afterwards.','Yes, install',()=>{
  const fd=new FormData();fd.append('firmware',f,f.name);const x=new XMLHttpRequest();
  x.upload.onprogress=e=>{if(e.lengthComputable){bar.value=Math.round(100*e.loaded/e.total);msg.textContent='Uploading… '+bar.value+' %';}};
  x.onload=()=>{let r={};try{r=JSON.parse(x.responseText);}catch(e){}
   if(r.ok){bar.value=100;msg.textContent='Firmware '+(r.version||'')+' installed. The box restarts now and checks it for 2 minutes; this page stops working.';}
   else{bar.hidden=true;msg.textContent='Not installed: '+(r.error||('HTTP '+x.status));$('fwUpload').disabled=false;}uploading=false;};
  x.onerror=()=>{uploading=false;msg.textContent='Upload failed (connection lost at '+bar.value+' %). Nothing was changed; try again. The serial log of the box shows the reason.';bar.hidden=true;$('fwUpload').disabled=false;};
- uploading=true;$('fwUpload').disabled=true;bar.hidden=false;bar.value=0;msg.textContent='Uploading…';x.open('POST','/api/ota');x.send(fd);};
+ uploading=true;$('fwUpload').disabled=true;bar.hidden=false;bar.value=0;msg.textContent='Uploading…';x.open('POST','/api/ota');x.send(fd);});};
 let uploading=false;  // the box serves one connection at a time: no polling during an upload
 loadStatus();loadConfig();loadLog();setInterval(()=>{if(uploading)return;api('/api/status').then(st=>{$('left').textContent=dur(st.service.secondsLeft);savedWhen(st);}).catch(()=>{});},30000);
 </script></body></html>
