@@ -98,7 +98,7 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     Serial.println("  config-set uplinks joinEui <hex>   LoRaWAN JoinEUI / AppEUI");
     Serial.println("  appkey <32 hex>                    store the LoRaWAN AppKey (MSB first); never printed");
     Serial.println("  service-password <password>        WiFi password of service mode (8-63 characters)");
-    Serial.println("  log                                print the recent log lines");
+    Serial.println("  log                                print the end of the log (from the SD card)");
     Serial.println("  reboot                             restart into normal mode (also leaves safe/service mode)");
     Serial.println("config-set and appkey apply after 'reboot'. Service mode: hold BOOT for 3 s, then release.");
   } else if (strcmp(line, "status") == 0) {
@@ -114,7 +114,7 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     printResult(ok, err, "ok: service-mode password stored");
     if (ok) LOGI("console", "service-mode password changed");
   } else if (strcmp(line, "log") == 0) {
-    printLog();
+    printLog(nowMs);
   } else if (strcmp(line, "reboot") == 0) {
     // A requested reboot is a normal start: it never counts as a crash, ends safe mode, and
     // (the service-mode request being one-shot) also ends service mode.
@@ -258,8 +258,21 @@ void SerialConsole::configSet(char* arg) {
               "ok: stored, reboot to apply (see 'config' for the stored values)");
 }
 
-void SerialConsole::printLog() {
-  // Printed one line at a time: no buffer for the whole log (RAM is short).
+void SerialConsole::printLog(uint32_t nowMs) {
+  // Normal operation: the end of the log file on the SD card (the complete log is there).
+  if (!app_.serviceMode) {
+    constexpr size_t kTailBytes = 4096;  // ~40 lines; per call, freed afterwards
+    auto buf = sysinfo::makeTempBuffer(kTailBytes);
+    const SdStore::Status sd = app_.storage.status();
+    if (buf && app_.storage.readLogTail(nowMs, buf.get(), kTailBytes) > 0) {
+      Serial.printf("--- end of %s (complete log on the SD card) ---\n", sd.logFile);
+      Serial.print(buf.get());
+      return;
+    }
+    Serial.println(buf ? "--- SD card not available: newest lines from RAM only ---"
+                       : "--- out of memory: newest lines from RAM only ---");
+  }
+  // Service mode (no SD card) or no card: the newest lines kept in RAM, one line at a time.
   LogLine line;
   for (size_t age = logger::lineCount(); age > 0; --age) {
     if (!logger::lineAt(age - 1, line)) continue;

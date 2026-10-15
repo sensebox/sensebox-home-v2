@@ -22,7 +22,7 @@
       ]
     }
   ],
-  "storage": { "sd": "auto", "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
+  "storage": { "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
   "service": { "apTimeoutMin": 15 },
   "deployment": {}
 }

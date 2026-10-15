@@ -24,7 +24,7 @@ namespace {
 
 constexpr const char* kTag = "service";
 constexpr size_t kResponseSize = 6144;  // per request, freed afterwards
-constexpr size_t kLiveLogLines = 20;
+constexpr size_t kLiveLogLines = logger::kRingLines;
 constexpr uint8_t kMaxClients = 2;  // each WiFi station costs RAM
 constexpr uint32_t kRebootDelayMs = 500;
 constexpr uint32_t kLowHeapWarning = 30000;

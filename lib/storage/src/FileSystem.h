@@ -24,6 +24,8 @@ class FileSystem {
   virtual bool append(const char* path, const char* data, size_t len) = 0;
   // Size in bytes, or -1 if the file doesn't exist.
   virtual int64_t fileSize(const char* path) = 0;
+  // Reads up to `len` bytes from `offset`. Returns the number read, -1 on error.
+  virtual int64_t read(const char* path, uint64_t offset, char* buf, size_t len) = 0;
   // Last modification time (UTC seconds), 0 if unknown (e.g. written before the clock was set).
   virtual uint32_t fileMtime(const char* path) = 0;
   virtual bool remove(const char* path) = 0;

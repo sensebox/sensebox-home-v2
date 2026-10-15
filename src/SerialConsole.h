@@ -25,7 +25,7 @@ class SerialConsole {
   void printStatus(uint32_t nowMs);
   void printConfig();
   void configSet(char* arg);
-  void printLog();
+  void printLog(uint32_t nowMs);
 
   App& app_;
   static constexpr size_t kLineLen = 2048;  // a complete config is ~1 KB

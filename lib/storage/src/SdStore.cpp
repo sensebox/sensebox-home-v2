@@ -256,6 +256,27 @@ void SdStore::flushNow(uint32_t nowMs) {
   if (!flushLog()) fail("writing the log", nowMs);
 }
 
+size_t SdStore::readLogTail(uint32_t nowMs, char* buf, size_t cap) {
+  if (cap == 0) return 0;
+  buf[0] = '\0';
+  flushNow(nowMs);
+  if (state_ != State::Mounted) return 0;
+  const int64_t size = fs_.fileSize(logPath_);
+  if (size <= 0) return 0;
+  const uint64_t want = cap - 1;
+  const uint64_t offset = static_cast<uint64_t>(size) > want ? static_cast<uint64_t>(size) - want : 0;
+  const int64_t n = fs_.read(logPath_, offset, buf, static_cast<size_t>(size - static_cast<int64_t>(offset)));
+  if (n <= 0) return 0;
+  buf[n] = '\0';
+  if (offset == 0) return static_cast<size_t>(n);
+  // Started in the middle of a line: drop the partial first line.
+  char* nl = static_cast<char*>(memchr(buf, '\n', static_cast<size_t>(n)));
+  if (nl == nullptr) return 0;
+  const size_t skip = static_cast<size_t>(nl - buf) + 1;
+  memmove(buf, buf + skip, static_cast<size_t>(n) - skip + 1);
+  return static_cast<size_t>(n) - skip;
+}
+
 void SdStore::tick(uint32_t nowMs) {
   if (state_ == State::Off) return;
 

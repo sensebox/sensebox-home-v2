@@ -4,6 +4,7 @@
 #include <unity.h>
 
 #include <map>
+#include <algorithm>
 #include <string>
 
 #include "Janitor.h"
@@ -38,6 +39,15 @@ class FakeFs : public FileSystem {
   int64_t fileSize(const char* path) override {
     auto it = files.find(path);
     return it == files.end() ? -1 : static_cast<int64_t>(it->second.data.size());
+  }
+  int64_t read(const char* path, uint64_t offset, char* buf, size_t len) override {
+    auto it = files.find(path);
+    if (!mounted || it == files.end()) return -1;
+    const std::string& d = it->second.data;
+    if (offset > d.size()) return 0;
+    const size_t n = std::min(len, d.size() - static_cast<size_t>(offset));
+    memcpy(buf, d.data() + offset, n);
+    return static_cast<int64_t>(n);
   }
   uint32_t fileMtime(const char* path) override {
     auto it = files.find(path);
@@ -417,6 +427,51 @@ void test_buffer_overflow_counts_dropped() {
   TEST_ASSERT_TRUE(sd.status().droppedMeasurements > 0);
 }
 
+void test_log_tail_comes_from_the_card() {
+  FakeFs fs;
+  Clock clock(fakeUptimeMs);
+  HealthRegistry health(fakeUptimeS);
+  SdStore sd(fs, clock, health);
+  sd.begin(testOptions(), 0);
+  sd.flushNow(100);  // the boot lines copied from the RAM ring at mount
+  for (int i = 0; i < 30; ++i) {
+    LogLine line{};
+    line.uptimeS = static_cast<uint32_t>(i);
+    line.level = LogLevel::Info;
+    strcpy(line.tag, "test");
+    snprintf(line.msg, sizeof(line.msg), "line number %02d", i);
+    sd.write(line);
+    if (i % 5 == 0) sd.flushNow(500);  // as the main loop does: the RAM buffer is only ~1 KB
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, sd.status().droppedLogLines);
+  // Not flushed yet: readLogTail() flushes first, so the newest line is there.
+  char buf[300];
+  const size_t n = sd.readLogTail(1000, buf, sizeof(buf));
+  TEST_ASSERT_TRUE(n > 0 && n < sizeof(buf));
+  TEST_ASSERT_EQUAL(n, strlen(buf));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "line number 29\n"));
+  TEST_ASSERT_NULL(strstr(buf, "line number 00"));  // older lines don't fit into 300 bytes
+  // Starts at a line boundary: the first character is the start of a log line.
+  TEST_ASSERT_EQUAL_CHAR('-', buf[0]);
+
+  // Whole file fits: everything, header included.
+  char big[8192];
+  sd.readLogTail(2000, big, sizeof(big));
+  TEST_ASSERT_EQUAL_CHAR('#', big[0]);
+  TEST_ASSERT_NOT_NULL(strstr(big, "line number 00"));
+
+  // Card gone: the flush before reading fails, the card is unmounted, nothing is returned.
+  fs.cardPresent = false;
+  fs.failWrites = true;
+  LogLine last{};
+  last.level = LogLevel::Info;
+  strcpy(last.tag, "test");
+  strcpy(last.msg, "after the card was pulled");
+  sd.write(last);
+  TEST_ASSERT_EQUAL(0, sd.readLogTail(3000, buf, sizeof(buf)));
+  TEST_ASSERT_FALSE(sd.status().mounted);
+}
+
 void test_small_card_is_flagged() {
   Clock clock(fakeUptimeMs);
   HealthRegistry health(fakeUptimeS);
@@ -494,6 +549,7 @@ int main() {
   RUN_TEST(test_card_removed_permanently_retries_with_backoff);
   RUN_TEST(test_buffer_overflow_counts_dropped);
   RUN_TEST(test_small_card_is_flagged);
+  RUN_TEST(test_log_tail_comes_from_the_card);
   RUN_TEST(test_janitor_frees_space_oldest_first);
   RUN_TEST(test_janitor_never_deletes_current_files_and_reports_full);
   return UNITY_END();

@@ -62,6 +62,8 @@ Done (builds for the MCU S2; 46 native unit tests pass; **not yet run on hardwar
 
 - Phase 6, OTA (2026-10-15; not yet run on hardware): upload in service mode (web UI, `POST /api/ota`), streamed into the other app slot; checks: ESP32-S2 image, image marker (this firmware), hardware revision, image hash; self-test (2 min normal operation + config accepted) with automatic rollback (`lib/ota`, `lib/updater`, §4.9). Not done (decision 2026-10-15): signatures, anti-downgrade.
 
+- Main loop at 10 Hz (100 ms, fixed rate) instead of ~100 Hz (decision 2026-10-15). Time-critical LoRaWAN timing stays in the LMIC task; the serial console reads all waiting input per pass; in service mode each HTTP request may wait up to 100 ms before it is handled.
+
 Not done yet: phase 7, `tools/` scripts, on-device tests.
 
 Findings during implementation:
@@ -70,7 +72,7 @@ Findings during implementation:
 - Adafruit AHTX0's `getEvent()` / `begin()` busy-wait without an upper bound. Mitigated by a presence check before each measurement; a sensor vanishing mid-measurement still ends in a watchdog reset.
 - SF12 airtime for the 23 B frame is ~2.0 s (the first draft said ~1.5 s).
 - **Web server:** the framework's synchronous `WebServer` is used instead of ESPAsyncWebServer. It is polled from the main loop, so request handlers can use config/health/clock without locks, and it needs no extra libraries. WebSocket live values (phase 8) will need a different server or a small WebSocket add-on.
-- **Internal RAM is the tightest resource.** On the ESP32-S2 static data shares 168 KB with code that must run from internal RAM; linking WiFi takes ~87 KB of it, and WiFi needs another ~40 KB of free heap at runtime (with only 10 KB free, WPA2 handshakes failed silently while open networks worked). Rules since then: permanent buffers stay small (log ring 40 lines); working buffers for console commands, config edits and web requests are allocated per call and freed (`sysinfo::makeTemp` / `makeTempBuffer`). Service mode warns in the log below 30 KB free. Measured on a board without PSRAM (2026-10-14): 32 KB free with the AP up, 15 KB after one notebook connected, then a crash on the first HTTP requests. Fixes: no mDNS, captive DNS polled in the main loop instead of the AsyncUDP task, max. 2 clients, smaller serial RX buffer, config decode scratch on the heap only while decoding. Static data headroom after phase 5: ~9.3 KB (code + static data use 162 of 168 KB). Phases 3 and 6 must budget their RAM explicitly.
+- **Internal RAM is the tightest resource.** On the ESP32-S2 static data shares 168 KB with code that must run from internal RAM; linking WiFi takes ~87 KB of it, and WiFi needs another ~40 KB of free heap at runtime (with only 10 KB free, WPA2 handshakes failed silently while open networks worked). Rules since then: permanent buffers stay small (log ring 16 lines since 2026-10-15; the full log is on the SD card); working buffers for console commands, config edits and web requests are allocated per call and freed (`sysinfo::makeTemp` / `makeTempBuffer`). Service mode warns in the log below 30 KB free. Measured on a board without PSRAM (2026-10-14): 32 KB free with the AP up, 15 KB after one notebook connected, then a crash on the first HTTP requests. Fixes: no mDNS, captive DNS polled in the main loop instead of the AsyncUDP task, max. 2 clients, smaller serial RX buffer, config decode scratch on the heap only while decoding. Static data headroom after phase 5: ~9.3 KB (code + static data use 162 of 168 KB). Phases 3 and 6 must budget their RAM explicitly.
 - The firmware's partition table replaces the stock senseBox TinyUF2 layout: no **TinyUF2** (USB drag-and-drop flashing) and no **APOTA** (open-AP fallback updater in `ota_1`). APOTA accepts any image without checks and would bypass rollback; TinyUF2 costs 256 KB and brings its own bootloader. Flashing is via esptool/PlatformIO; updates in the field come with our own OTA (phase 6). If a DIY/education variant needs drag-and-drop flashing later, TinyUF2 can be added back as a partition (smaller app slots; its bootloader must then be checked for rollback support). Restoring a board to the stock layout needs esptool (files in the framework's `variants/sensebox_mcu_esp32s2/`).
 
 ---
@@ -339,7 +341,7 @@ Several uplinks can be active at once (e.g. LoRa + WiFi in the future). Each has
 - **Config** (see §5)
 - **Logger:**
   - `LOGI("sps30", "fan cleaning started")`, with levels E/W/I/D and module tags
-  - output to Serial (if enabled) and a static **RAM ring buffer** (e.g. last 200 lines / 16 KB)
+  - output to Serial (if enabled) and a small static **RAM ring buffer** (implemented: last 16 lines, ~2 KB; decision 2026-10-15: the log lives on the SD card, RAM only bridges the time before the card is mounted, the status snapshot and service mode). Console `log` reads the end of the current log file from the card
   - `/logs/B<boot>-<part>.log` on the SD card with size-based rotation (§4.5)
   - errors and warnings also go to a small persistent "last 20 errors" list in NVS
   - logs can be read via REST and are part of the diagnostic report

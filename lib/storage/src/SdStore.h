@@ -72,6 +72,10 @@ class SdStore : public MeasurementSink, public LogSink {
   void tick(uint32_t nowMs);
   // Writes everything buffered now, e.g. right before a restart.
   void flushNow(uint32_t nowMs);
+  // The end of the current log file (flushes first): up to cap-1 bytes, starting at a line
+  // boundary, 0-terminated. The full log lives on the card; RAM only keeps the newest lines.
+  // Returns the length, 0 if the card isn't mounted. Main loop only.
+  size_t readLogTail(uint32_t nowMs, char* buf, size_t cap);
 
   void onMeasurement(const Measurement& m) override;
   void write(const LogLine& line) override;

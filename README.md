@@ -71,7 +71,7 @@ Open the serial monitor at 115200 baud (`pio device monitor`). Commands are one 
 | `config-set uplinks joinEui <hex>` | Set the LoRaWAN JoinEUI (also accepted: `appEui`). Same format as the DevEUI. |
 | `appkey <hex>` | Store the LoRaWAN AppKey: 32 hex digits, MSB first, as in the TTN console. It is stored separately from the config and never printed; `status` only shows `set` or `missing`. |
 | `service-password <password>` | Set the WiFi password of [service mode](#service-mode) (8–63 characters; default `123sensebox`). Stored like the AppKey and never printed by `status` or `config`. |
-| `log` | Print the last 40 log lines. |
+| `log` | Print the end of the log (about the last 40 lines) from the current log file on the SD card. The complete log is on the card (see [SD card](#sd-card)). In service mode, or if the card is unavailable, only the newest 16 lines kept in RAM. |
 | `reboot` | Restart the box into normal operation. Also ends safe mode and service mode. |
 
 Notes:
