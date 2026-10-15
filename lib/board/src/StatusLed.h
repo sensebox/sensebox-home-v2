@@ -4,13 +4,13 @@
 
 #include "Health.h"
 
-// On-board RGB LED (plan §4.8). Shows one pattern at a time:
-//   booting        blue, steady
-//   ok             green blink every 5 s
-//   degraded       yellow blink every 2 s
-//   error          red blink every 1 s
-//   service mode   purple, steady
-//   safe mode      red/purple alternating
+// On-board RGB LED (plan §4.8):
+//   booting        blue
+//   ok             green
+//   degraded       yellow
+//   error          red
+//   service mode   purple
+//   safe mode      white
 // Brightness is kept low: the LED sits in an outdoor housing and draws current.
 
 class StatusLed {
