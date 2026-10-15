@@ -23,6 +23,8 @@ pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre
 .savedHead h2{margin:6px 0 4px}.savedHead p{margin:0;color:var(--mute);font-size:14px}
 .tag{display:inline-block;background:var(--mute);color:var(--card);font-size:12px;font-weight:700;letter-spacing:.06em;padding:2px 8px;border-radius:4px}
 .live{display:inline-block;background:var(--ok);color:var(--card);font-size:11px;font-weight:700;letter-spacing:.06em;padding:1px 6px;border-radius:4px;vertical-align:2px;margin-left:6px}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}th{white-space:nowrap}
+@media(max-width:600px){main{padding:10px}.saved{padding:8px 8px 0}section{padding:12px}table{font-size:13px}td,th{padding:4px}}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px 16px}.grid div span{color:var(--mute)}
 </style></head><body>
 <header><h1 id="title">senseBox:home</h1><div class="sub" id="fw"></div></header>
@@ -37,10 +39,10 @@ Settings changed here apply after the restart. Service mode closes after <b id="
 <h2>Status saved <span id="savedWhen">before service mode started</span></h2>
 <p>Frozen at the moment service mode was started. These values do not change until the box runs normally again.</p></div>
 <section><h2>Overview (saved)</h2><div class="grid" id="overview"></div></section>
-<section><h2>Sensors (saved)</h2><table id="sensors"></table></section>
-<section><h2>Last measured values (saved)</h2><table id="values"></table></section>
+<section><h2>Sensors (saved)</h2><div class="tw"><table id="sensors"></table></div></section>
+<section><h2>Last measured values (saved)</h2><div class="tw"><table id="values"></table></div></section>
 <section><h2>LoRaWAN (saved)</h2><div class="grid" id="lorawan"></div></section>
-<section><h2>Components (saved)</h2><table id="components"></table></section>
+<section><h2>Components (saved)</h2><div class="tw"><table id="components"></table></div></section>
 <section><h2>Log before service mode (saved)</h2><pre id="logBefore"></pre></section>
 </div>
 
