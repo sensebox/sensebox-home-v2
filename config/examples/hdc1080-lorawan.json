@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "station": { "name": "" },
+  "sensors": [
+    { "slot": 0, "type": "hdc1080", "intervalSec": 60 }
+  ],
+  "uplinks": [
+    {
+      "type": "lorawan-cayenne",
+      "devEui": "",
+      "joinEui": "",
+      "intervalSec": 600,
+      "channels": [
+        { "ch": 1, "slot": 0, "phenomenon": "air_temperature", "lpp": "temperature" },
+        { "ch": 2, "slot": 0, "phenomenon": "relative_humidity", "lpp": "relative_humidity" }
+      ]
+    }
+  ]
+}

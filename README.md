@@ -154,7 +154,7 @@ All answers are JSON; errors come as `{"ok": false, "error": "…"}`.
 
 The config is a JSON document stored in the box's flash memory. It survives firmware updates. When the format changes in a future version, an old config is migrated automatically (`schemaVersion`).
 
-Set it with `config-set <json>` (one line) or field by field (see [Serial console](#serial-console)), and read it back with `config`.
+Set it with `config-set <json>` (one line) or field by field (see [Serial console](#serial-console)), and read it back with `config`. Ready-made configs for common setups are in [config/examples/](config/examples/).
 
 All sections are optional; missing fields use the defaults below. Unknown fields are rejected, so typos don't go unnoticed.
 

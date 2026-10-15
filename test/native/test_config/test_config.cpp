@@ -233,6 +233,31 @@ void test_readme_examples_decode() {
   TEST_ASSERT_NOT_NULL(g_cfg.sensors[0].calibration(Phenomenon::AirTemperature));
 }
 
+void test_example_configs_decode() {
+  struct Example {
+    const char* path;
+    uint8_t sensors;
+    uint8_t channels;
+  };
+  const Example examples[] = {
+      {"config/examples/hdc1080.json", 1, 0},
+      {"config/examples/hdc1080-lorawan.json", 1, 2},
+      {"config/examples/am2315c-lorawan.json", 1, 2},
+      {"config/examples/hdc1080-sps30-lorawan.json", 2, 6},
+      {"config/examples/olpe.json", 2, 6},
+  };
+  for (const Example& e : examples) {
+    setDefaults(g_cfg);
+    const size_t n = loadFile(e.path, g_json, sizeof(g_json));
+    TEST_ASSERT_TRUE_MESSAGE(n > 0, e.path);
+    const DecodeResult r = decode(g_json, n, g_cfg);
+    TEST_ASSERT_TRUE_MESSAGE(r.ok, r.error);
+    TEST_ASSERT_EQUAL_MESSAGE(e.sensors, g_cfg.sensorCount, e.path);
+    const uint8_t channels = g_cfg.uplinkCount > 0 ? g_cfg.uplinks[0].lorawan.channelCount : 0;
+    TEST_ASSERT_EQUAL_MESSAGE(e.channels, channels, e.path);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_olpe_template_decodes);
@@ -243,5 +268,6 @@ int main() {
   RUN_TEST(test_migration_errors);
   RUN_TEST(test_decode_uses_migrations);
   RUN_TEST(test_readme_examples_decode);
+  RUN_TEST(test_example_configs_decode);
   return UNITY_END();
 }

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "station": { "name": "" },
+  "sensors": [
+    { "slot": 0, "type": "hdc1080", "intervalSec": 60 }
+  ]
+}
