@@ -72,6 +72,7 @@ Open the serial monitor at 115200 baud (`pio device monitor`). Commands are one 
 | `appkey <hex>` | Store the LoRaWAN AppKey: 32 hex digits, MSB first, as in the TTN console. It is stored separately from the config and never printed; `status` only shows `set` or `missing`. |
 | `service-password <password>` | Set the WiFi password of [service mode](#service-mode) (8–63 characters; default `123sensebox`). Stored like the AppKey and never printed by `status` or `config`. |
 | `log` | Print the end of the log (about the last 40 lines) from the current log file on the SD card. The complete log is on the card (see [SD card](#sd-card)). In service mode, or if the card is unavailable, only the newest 16 lines kept in RAM. |
+| `service` | Restart into [service mode](#service-mode), like holding BOOT for 3 s. Not available while a fresh firmware update is being checked. |
 | `reboot` | Restart the box into normal operation. Also ends safe mode and service mode. |
 
 Notes:
@@ -111,6 +112,8 @@ The MCU S2 has no PSRAM, and WiFi needs a large part of the RAM. So service mode
 **Start:**
 1. Hold the **BOOT** button for 3 seconds while the box is running. The LED turns purple.
 2. Release the button. The box saves its status and restarts into service mode.
+
+Or type `service` on the [serial console](#serial-console).
 
 Press BOOT only *after* the box has started. Held during power-on or reset, it puts the chip into flashing mode instead.
 
@@ -180,7 +183,7 @@ If any check fails, the update is refused with a message and nothing changes.
 - it rejects the configuration (e.g. a failed migration), or
 - it is restarted in any way.
 
-During these 2 minutes `status` shows `NEW FIRMWARE: self-test running`, and the BOOT button doesn't open service mode, because the restart would roll the update back. After a rollback, `status` and the web page say that an earlier update was rolled back.
+During these 2 minutes `status` shows `NEW FIRMWARE: self-test running`, and neither the BOOT button nor `service` opens service mode, because the restart would roll the update back. After a rollback, `status` and the web page say that an earlier update was rolled back.
 
 ---
 
