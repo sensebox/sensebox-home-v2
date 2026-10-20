@@ -3,14 +3,12 @@
 #include <stdint.h>
 
 #include "Health.h"
+#include "LedPattern.h"
 
-// On-board RGB LED (plan §4.8):
-//   booting        blue
-//   ok             green
-//   degraded       yellow
-//   error          red
-//   service mode   purple
-//   safe mode      white
+// On-board RGB LED:
+//   normal operation   green, with blinks for active conditions (see LedPattern.h)
+//   critical error     red (safe mode, or config rejected): normal operation is halted
+//   service mode       blue: normal operation is halted
 // Brightness is kept low: the LED sits in an outdoor housing and draws current.
 
 class StatusLed {
@@ -20,11 +18,12 @@ class StatusLed {
   void begin();
   void setMode(Mode mode) { mode_ = mode; }
   Mode mode() const { return mode_; }
-  void tick(uint32_t nowMs, ComponentStatus overall);
+  void tick(uint32_t nowMs, const HealthRegistry& health);
 
  private:
-  void show(uint8_t r, uint8_t g, uint8_t b);
+  void show(LedColor color);
 
   Mode mode_ = Mode::Booting;
-  uint32_t lastColor_ = 0xFFFFFFFF;
+  LedColor lastColor_ = LedColor::Off;
+  bool shown_ = false;
 };

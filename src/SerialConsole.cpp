@@ -205,7 +205,8 @@ void SerialConsole::printStatus(uint32_t nowMs) {
 
   const SdStore::Status sd = app_.storage.status();
   if (!sd.enabled) {
-    Serial.println("sd: not used (out of memory at boot)");
+    // Safe mode never starts the store; otherwise only a failed buffer allocation leaves it off.
+    Serial.println(app_.safeMode ? "sd: not used in safe mode" : "sd: not used (out of memory at boot)");
   } else if (!sd.mounted) {
     Serial.println("sd: NOT MOUNTED - the card is part of the hardware; see the 'sd' health line");
   } else {

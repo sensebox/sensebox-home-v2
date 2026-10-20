@@ -36,6 +36,10 @@ constexpr UBaseType_t kTaskPriority = 3;  // above the Arduino loop task (1)
 // A TX incl. both RX windows takes < 10 s even at SF12; anything longer means the radio hangs.
 constexpr uint32_t kTxTimeoutMs = 30000;
 constexpr uint8_t kMaxRadioResets = 3;
+// Without a radio, LMIC fails an assert in radio_init() and spins with interrupts off, which
+// ends in an interrupt-watchdog reset (and after a few of those in safe mode). So the radio is
+// probed first, and while it is missing the probe is repeated now and then.
+constexpr uint32_t kRadioProbeIntervalMs = 60000;
 
 // ---- data shared with the LMIC callbacks (written before the task starts, then read-only) ----
 uint8_t g_devEui[8];   // LSB first, as LMIC expects
@@ -52,7 +56,9 @@ struct Cmd {
   uint8_t data[51];
 };
 
-enum class EvtType : uint8_t { Joining, Joined, JoinFailed, TxStart, TxComplete, TxRejected, TimeSync, LinkDead, Reset };
+enum class EvtType : uint8_t {
+  Joining, Joined, JoinNoAnswer, JoinFailed, TxStart, TxComplete, TxRejected, TimeSync, LinkDead, Reset, RadioMissing
+};
 struct Evt {
   EvtType type;
   int32_t a;   // TxComplete: rssi; TxStart: SF; TimeSync: GPS seconds; TxRejected: error code
@@ -82,7 +88,31 @@ bool parseEuiLsbFirst(const char* hex, uint8_t out[8]) {
   return true;
 }
 
+// Resets the SX1276 like LMIC's radio_init() and reads its version register (0x12 for an
+// SX1276/RFM95). An empty socket reads 0x00 or 0xFF.
+bool radioPresent() {
+  constexpr uint8_t kRegVersion = 0x42;
+  constexpr uint8_t kSx1276Version = 0x12;
+  pinMode(lmic_pins.nss, OUTPUT);
+  digitalWrite(lmic_pins.nss, HIGH);
+  pinMode(lmic_pins.rst, OUTPUT);
+  digitalWrite(lmic_pins.rst, LOW);
+  delay(1);
+  pinMode(lmic_pins.rst, INPUT);
+  delay(5);
+  SPI.begin();
+  SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  digitalWrite(lmic_pins.nss, LOW);
+  SPI.transfer(kRegVersion & 0x7F);  // MSB 0 = read
+  const uint8_t version = SPI.transfer(0x00);
+  digitalWrite(lmic_pins.nss, HIGH);
+  SPI.endTransaction();
+  return version == kSx1276Version;
+}
+
 // ---- LMIC task: the only code that touches LMIC ----
+
+bool g_radioMissing = false;  // LMIC task only: stack not (re)started, don't run LMIC
 
 void onNetworkTime(void* /*userData*/, int flagSuccess) {
   if (!flagSuccess) return;
@@ -100,6 +130,9 @@ void onLmicEvent(void* /*userData*/, ev_t ev) {
       LMIC_setLinkCheckMode(0);
       pushEvent(EvtType::Joined);
       break;
+    // One join request without a join-accept (logged). EV_JOIN_FAILED only comes after LMIC
+    // went through SF7..SF12 on all three join channels: about 2.5 h (0.1 % duty cycle).
+    case EV_JOIN_TXCOMPLETE: pushEvent(EvtType::JoinNoAnswer); break;
     case EV_JOIN_FAILED:
     case EV_REJOIN_FAILED: pushEvent(EvtType::JoinFailed); break;
     case EV_TXSTART: pushEvent(EvtType::TxStart, getSf(LMIC.rps) - SF7 + 7); break;
@@ -134,7 +167,16 @@ void powerCycleRadio() {
 void handleCommand(const Cmd& cmd) {
   if (cmd.type == CmdType::ResetRadio) {
     powerCycleRadio();
-    startStack();
+    g_radioMissing = !radioPresent();
+    if (g_radioMissing) {
+      pushEvent(EvtType::RadioMissing);
+    } else {
+      startStack();
+    }
+    return;
+  }
+  if (g_radioMissing) {
+    pushEvent(EvtType::TxRejected, -101);
     return;
   }
   if (LMIC.opmode & OP_TXRXPEND) {
@@ -151,7 +193,7 @@ void lmicTask(void*) {
   Cmd cmd;
   for (;;) {
     if (xQueueReceive(g_cmdQueue, &cmd, 0) == pdTRUE) handleCommand(cmd);
-    os_runloop_once();
+    if (!g_radioMissing) os_runloop_once();
     vTaskDelay(1);
   }
 }
@@ -175,6 +217,11 @@ bool LmicTransport::begin(const config::LoRaWanConfig& cfg, const uint8_t appKey
   if (!parseEuiLsbFirst(cfg.devEui, g_devEui) || !parseEuiLsbFirst(cfg.joinEui, g_joinEui)) {
     health_.reportError(healthId_, 1, "DevEUI/JoinEUI not configured");
     LOGE(kTag, "DevEUI/JoinEUI missing or invalid, LoRaWAN disabled");
+    return false;
+  }
+  if (!radioPresent()) {
+    health_.reportError(healthId_, 8, "LoRa module not found");
+    LOGE(kTag, "no LoRa module in XBee socket 1, LoRaWAN disabled");
     return false;
   }
   memcpy(g_appKey, appKey, 16);
@@ -238,15 +285,33 @@ void LmicTransport::poll(uint32_t nowMs) {
     xQueueSend(g_cmdQueue, &cmd, 0);
     if (radioResets_ > kMaxRadioResets) LOGE(kTag, "radio keeps hanging; check the LoRa-Bee");
   }
+
+  if (radioMissing_ && nowMs - radioMissingSinceMs_ > kRadioProbeIntervalMs) {
+    radioMissingSinceMs_ = nowMs;
+    Cmd cmd{};
+    cmd.type = CmdType::ResetRadio;
+    xQueueSend(g_cmdQueue, &cmd, 0);
+  }
 }
 
 void LmicTransport::handleEvent(uint32_t nowMs) {
   Evt e;
   if (xQueueReceive(g_evtQueue, &e, 0) != pdTRUE) return;
   switch (e.type) {
+    case EvtType::RadioMissing:
+      if (!radioMissing_) {
+        health_.reportError(healthId_, 8, "LoRa module not found");
+        LOGE(kTag, "LoRa module gone; probing again every %lu s", static_cast<unsigned long>(kRadioProbeIntervalMs / 1000));
+      }
+      radioMissing_ = true;
+      radioMissingSinceMs_ = nowMs;
+      joined_ = false;
+      busy_ = false;
+      break;
     case EvtType::Joining:
-      ++joinAttempts_;
-      LOGI(kTag, "joining (attempt %lu)", static_cast<unsigned long>(joinAttempts_));
+      if (radioMissing_) LOGI(kTag, "LoRa module found again");
+      radioMissing_ = false;
+      LOGI(kTag, "joining");
       break;
     case EvtType::Joined:
       joined_ = true;
@@ -254,13 +319,21 @@ void LmicTransport::handleEvent(uint32_t nowMs) {
       health_.reportSuccess(healthId_, clock_.nowUtc());
       LOGI(kTag, "joined");
       break;
+    case EvtType::JoinNoAnswer:
+      // Only logged: the LED keeps showing "connecting" until LMIC gives up on all SFs.
+      LOGW(kTag, "no answer to join request %lu (SF%u)", static_cast<unsigned long>(joinAttempts_), lastSf_);
+      break;
     case EvtType::JoinFailed:
       joined_ = false;
-      health_.reportError(healthId_, 4, "join failed, retrying", ComponentStatus::Degraded);
-      LOGW(kTag, "join failed, LMIC retries");
+      health_.reportError(healthId_, 4, "join failed on SF7-SF12, retrying", ComponentStatus::Degraded);
+      LOGW(kTag, "join failed on all spreading factors, LMIC keeps trying at SF12");
       break;
     case EvtType::TxStart:
       lastSf_ = static_cast<uint8_t>(e.a);
+      if (!joined_) {  // a join request (LMIC also reports EV_TXSTART for those)
+        ++joinAttempts_;
+        LOGI(kTag, "join request %lu, SF%u", static_cast<unsigned long>(joinAttempts_), lastSf_);
+      }
       break;
     case EvtType::TxComplete: {
       busy_ = false;

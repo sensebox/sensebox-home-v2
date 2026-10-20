@@ -61,6 +61,8 @@ class LmicTransport : public LoRaWanTransport {
   int8_t lastSnr_ = 0;
   uint8_t lastSf_ = 0;
   uint8_t radioResets_ = 0;
+  bool radioMissing_ = false;          // radio gone after a reset; probed every minute
+  uint32_t radioMissingSinceMs_ = 0;
   uint8_t pendingLen_ = 0;       // payload length of the uplink in flight (for the budget)
   bool pendingTimeReq_ = false;
 };

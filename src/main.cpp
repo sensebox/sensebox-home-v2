@@ -166,6 +166,7 @@ void startUplinks() {
     if (persist::readSecret(persist::secret::kLoRaAppKey, appKey, sizeof(appKey)) == sizeof(appKey)) {
       g_lora.begin(u.lorawan, appKey);
     } else {
+      g_health.reportError(g_health.add("lorawan"), 7, "AppKey not set");
       LOGW(kTag, "LoRaWAN AppKey not set: frames are built and logged, but not sent");
     }
     memset(appKey, 0, sizeof(appKey));
@@ -175,6 +176,8 @@ void startUplinks() {
     g_cayenne->begin(millis());
     g_pipeline.addSink(g_cayenne);
   }
+  // No LoRaWAN target: the transport never starts, so it isn't "connecting" either.
+  if (g_cayenne == nullptr) g_health.setStatus(g_health.add("lorawan"), ComponentStatus::Disabled);
   if (g_config.uplinkCount == 0) LOGI(kTag, "no data target configured: measuring only");
 }
 
@@ -222,7 +225,7 @@ void runSelfTest(uint32_t nowMs) {
   }
 }
 
-// BOOT held >= 3 s: the LED turns purple, and the restart happens when the button is released.
+// BOOT held >= 3 s: the LED turns blue, and the restart happens when the button is released.
 // Restarting while GPIO0 (a strapping pin) is still held could start the ROM download mode.
 void handleButton(uint32_t nowMs) {
   if (g_button.update(board::serviceButtonPressed(), nowMs) == ButtonDetector::Event::LongPress) {
@@ -355,7 +358,7 @@ void loop() {
     g_service.loop(nowMs);
     if (Serial.available() > 0) g_service.markActivity();
     g_console.poll(nowMs);
-    g_led.tick(nowMs, g_health.overall());
+    g_led.tick(nowMs, g_health);
     vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));
     return;
   }
@@ -374,7 +377,7 @@ void loop() {
   runSelfTest(nowMs);
   handleButton(nowMs);
   g_console.poll(nowMs);
-  g_led.tick(nowMs, g_health.overall());
+  g_led.tick(nowMs, g_health);
   periodicStatusLog(nowMs);
 
   vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));

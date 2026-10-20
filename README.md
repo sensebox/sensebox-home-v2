@@ -11,7 +11,7 @@ The smallest setup: one HDC1080 on the MCU S2, no WiFi, no LoRaWAN. The box meas
 **You need:**
 - senseBox MCU S2 with USB cable
 - HDC1080 temperature/humidity sensor on a QWIIC/I2C port
-- microSD card (at least 4 GB, FAT32) in the MCU S2. It is part of the hardware: without it the box still measures, but reports an `sd` error and the LED is red.
+- microSD card (at least 4 GB, FAT32) in the MCU S2. It is part of the hardware: without it the box still measures, but reports an `sd` error and the LED blinks purple.
 - [PlatformIO](https://platformio.org/) (CLI or the VS Code extension)
 
 **1. Build and flash the development firmware.** The dev build logs every single measurement; the normal build only logs the averages that get uploaded.
@@ -94,12 +94,19 @@ Notes:
 
 | LED | Meaning |
 |---|---|
-| 🔵 - blue | starting |
-| 🟢 - green | everything OK |
-| 🟠 - orange | degraded: something needs attention (e.g. not joined yet, a window without valid values) |
-| 🔴 - red | error: a component failed (e.g. a sensor) |
-| 🟣 - purple | [service mode](#service-mode): BOOT held ≥ 3 s (the box restarts when you release it), and while service mode runs |
-| 🔴🟣 - alternating red/purple | If the box crashes (panic, watchdog, brownout) more than 5 times in a row without running normally for 10 minutes, it starts in **safe mode**. Sensors and LoRaWAN stay off and only the console runs, so a broken config can't keep the box in a reboot loop. Service mode can be started from safe mode with the BOOT button. |
+| 🟢 - green | running normal operation |
+| ⚪ - blink white | starting... (connecting, setting up sensors) |
+| 🟡 - blink yellow | couldn't connect |
+| 🔴 - blink red | couldn't start or read one or more sensors |
+| 🟣 - blink purple | couldn't read/write the SD card  |
+| 🔴 - red | critical error, normal operation is halted: the stored config was rejected, or [safe mode](#safe-mode) |
+| 🔵 - blue | [service mode](#service-mode) |
+
+---
+
+## Safe mode
+
+If the box crashes (panic, watchdog, brownout) more than 5 times in a row without running normally for 10 minutes, it starts in safe mode (steady red). Sensors and LoRaWAN stay off and only the console runs, so a broken config can't keep the box in a reboot loop. Service mode can be started from safe mode with the BOOT button.
 
 ---
 
@@ -110,7 +117,7 @@ Service mode opens a WiFi access point with a web page for checking and setting 
 The MCU S2 has no PSRAM, and WiFi needs a large part of the RAM. So service mode **replaces** normal operation: while it runs, nothing is measured and nothing is sent over LoRaWAN. Before switching, the box saves its current status, and the web page shows that saved status.
 
 **Start:**
-1. Hold the **BOOT** button for 3 seconds while the box is running. The LED turns purple.
+1. Hold the **BOOT** button for 3 seconds while the box is running. The LED turns blue.
 2. Release the button. The box saves its status and restarts into service mode.
 
 Or type `service` on the [serial console](#serial-console).
@@ -337,7 +344,7 @@ Every value carries a quality bitmask (`q=0x...` in the log). `0x000` means no r
 
 The microSD card is a **fixed part of the hardware** (at least 4 GB). The box keeps its **measurement history** and its **log** on it. It is used in normal operation only, not in service or safe mode.
 
-A missing or failing card is treated as a hardware fault: health shows an `sd` error and the LED is red. Measuring and sending continue meanwhile, so nothing else stops because of the card.
+A missing or failing card is treated as a hardware fault: health shows an `sd` error and the LED blinks purple. Measuring and sending continue meanwhile, so nothing else stops because of the card.
 
 **Files:** named by boot number and part, because after a power cut the box has no time until the first LoRaWAN time sync.
 
@@ -379,7 +386,7 @@ utc,uptime_s,slot,phenomenon,kind,value,unit,quality
 - **Never more than 90 % full** (`lowWatermarkPct`): above that, the oldest files are deleted, whatever their age. Old logs go first, then the oldest measurement files.
 - **Cleanup down to 80 %** (`highWatermarkPct`): deleting continues until 20 % is free again, so it doesn't happen file by file. Measurement files younger than `minRetentionDays` are kept for this part.
 - **Never deleted:** the files currently being written, and files that don't follow the naming scheme (your own files are safe).
-- **Over 90 % anyway:** this only happens if the files currently being written fill the card. Health then shows `card over 90 % full` and the LED is red.
+- **Over 90 % anyway:** this only happens if the files currently being written fill the card. Health then shows `card over 90 % full` and the LED blinks purple.
 
 The check runs after mounting and every 10 minutes. Each deleted file is logged.
 
@@ -403,7 +410,7 @@ The check runs after mounting and every 10 minutes. Each deleted file is logged.
    reboot
    ```
 4. **Check that it works:**
-   - The log shows `joining` and then `joined`.
+   - The log shows `joining`, `join request 1, SF7` and then `joined`. If a request gets no answer (`no answer to join request`), the box tries again: SF7 to SF12, three requests each, with longer pauses at higher SF because of the 0.1 % duty cycle on the join channels (about 1 min after a SF7 request, about 25 min after a SF12 request). The LED blinks white during all of this and only switches to yellow when all 18 requests went unanswered (`join failed on SF7-SF12`, after about 2.5 h); the box then keeps trying at SF12.
    - After 10 minutes, `queued 7 bytes`.
    - TTN shows `temperature_1` and `relative_humidity_2`.
 
