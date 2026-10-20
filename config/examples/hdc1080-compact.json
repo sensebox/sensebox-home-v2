@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "station": { "name": "", "timezone": "Europe/Berlin" },
+  "sensors": [
+    { "slot": 0, "type": "hdc1080", "intervalSec": 60 }
+  ],
+  "uplinks": [
+    {
+      "type": "lorawan-compact",
+      "devEui": "",
+      "joinEui": "0000000000000000",
+      "intervalSec": 600,
+      "timeSyncIntervalSec": 259200,
+      "channels": [
+        { "slot": 0, "phenomenon": "air_temperature" },
+        { "slot": 0, "phenomenon": "relative_humidity" }
+      ]
+    }
+  ]
+}

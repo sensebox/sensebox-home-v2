@@ -107,9 +107,18 @@ void test_invalid_configs_are_rejected() {
   expectRejected(
       "{\"schemaVersion\":1,\"uplinks\":[{\"type\":\"lorawan-cayenne\",\"devEui\":\"XYZ\"}]}",
       "16 hex digits");
+  expectRejected(
+      "{\"schemaVersion\":1,\"sensors\":[{\"slot\":0,\"type\":\"a\"}],\"uplinks\":[{\"type\":\"lorawan-compact\","
+      "\"channels\":[{\"ch\":1,\"slot\":0,\"phenomenon\":\"pm10\"}]}]}",
+      "not used by lorawan-compact");
+  expectRejected(
+      "{\"schemaVersion\":1,\"sensors\":[{\"slot\":0,\"type\":\"a\"}],\"uplinks\":[{\"type\":\"lorawan-compact\","
+      "\"channels\":[{\"slot\":0,\"phenomenon\":\"pm10\"},{\"slot\":0,\"phenomenon\":\"pm10\"}]}]}",
+      "duplicate slot/phenomenon");
   expectRejected("{\"schemaVersion\":1,\"uplinks\":[{\"type\":\"carrier-pigeon\"}]}", "type: unknown");
   expectRejected("{\"schemaVersion\":1,\"storage\":{\"lowWatermarkPct\":30,\"highWatermarkPct\":20}}",
                  "lowWatermarkPct");
+  expectRejected("{\"schemaVersion\":1,\"service\":{\"idleExitSec\":3601}}", "service.idleExitSec");
   expectRejected("{\"schemaVersion\":1,\"station\":{\"name\":\"0123456789012345678901234567890123456789\"}}",
                  "longer than");
 }
@@ -233,6 +242,25 @@ void test_readme_examples_decode() {
   TEST_ASSERT_NOT_NULL(g_cfg.sensors[0].calibration(Phenomenon::AirTemperature));
 }
 
+void test_compact_config_roundtrip() {
+  const size_t n = loadFile("config/examples/olpe.json", g_json, sizeof(g_json));
+  TEST_ASSERT_TRUE(decode(g_json, n, g_cfg).ok);
+  const LoRaWanConfig& lw = g_cfg.uplinks[0].lorawan;
+  TEST_ASSERT_EQUAL(static_cast<int>(UplinkType::LoRaWanCompact), static_cast<int>(g_cfg.uplinks[0].type));
+  TEST_ASSERT_EQUAL(6, lw.channelCount);
+  TEST_ASSERT_EQUAL(static_cast<int>(Phenomenon::PM2_5), static_cast<int>(lw.channels[2].phenomenon));
+
+  char out[4096];
+  const size_t len = encode(g_cfg, out, sizeof(out));
+  TEST_ASSERT_TRUE(len > 0);
+  TEST_ASSERT_NULL(strstr(out, "\"lpp\""));  // compact entries have no Cayenne fields
+  setDefaults(g_cfg2);
+  const DecodeResult r = decode(out, len, g_cfg2);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, r.error);
+  TEST_ASSERT_EQUAL(static_cast<int>(UplinkType::LoRaWanCompact), static_cast<int>(g_cfg2.uplinks[0].type));
+  TEST_ASSERT_EQUAL(6, g_cfg2.uplinks[0].lorawan.channelCount);
+}
+
 void test_example_configs_decode() {
   struct Example {
     const char* path;
@@ -245,6 +273,8 @@ void test_example_configs_decode() {
       {"config/examples/am2315c-lorawan.json", 1, 2},
       {"config/examples/hdc1080-sps30-lorawan.json", 2, 6},
       {"config/examples/olpe.json", 2, 6},
+      {"config/olpe-template.json", 2, 6},
+      {"config/examples/hdc1080-compact.json", 1, 2},
   };
   for (const Example& e : examples) {
     setDefaults(g_cfg);
@@ -256,6 +286,24 @@ void test_example_configs_decode() {
     const uint8_t channels = g_cfg.uplinkCount > 0 ? g_cfg.uplinks[0].lorawan.channelCount : 0;
     TEST_ASSERT_EQUAL_MESSAGE(e.channels, channels, e.path);
   }
+}
+
+void test_service_settings_default_and_roundtrip() {
+  const char* minimal = "{\"schemaVersion\":1}";
+  TEST_ASSERT_TRUE(decode(minimal, strlen(minimal), g_cfg).ok);
+  TEST_ASSERT_EQUAL(60, g_cfg.service.idleExitSec);
+
+  const char* json = "{\"schemaVersion\":1,\"service\":{\"idleExitSec\":0}}";
+  DecodeResult r = decode(json, strlen(json), g_cfg);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, r.error);
+  char out[4096];
+  const size_t len = encode(g_cfg, out, sizeof(out));
+  TEST_ASSERT_TRUE(len > 0);
+  setDefaults(g_cfg2);
+  r = decode(out, len, g_cfg2);
+  TEST_ASSERT_TRUE_MESSAGE(r.ok, r.error);
+  TEST_ASSERT_EQUAL(0, g_cfg2.service.idleExitSec);
+  TEST_ASSERT_EQUAL(15, g_cfg2.service.apTimeoutMin);
 }
 
 void test_removed_sd_switch_is_rejected() {
@@ -275,7 +323,9 @@ int main() {
   RUN_TEST(test_migration_errors);
   RUN_TEST(test_decode_uses_migrations);
   RUN_TEST(test_removed_sd_switch_is_rejected);
+  RUN_TEST(test_service_settings_default_and_roundtrip);
   RUN_TEST(test_readme_examples_decode);
   RUN_TEST(test_example_configs_decode);
+  RUN_TEST(test_compact_config_roundtrip);
   return UNITY_END();
 }

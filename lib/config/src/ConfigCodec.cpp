@@ -107,8 +107,9 @@ bool decodeSensor(JsonObjectConst obj, SensorConfig& s, size_t index, DecodeResu
   return true;
 }
 
-bool decodeLoRaWan(JsonObjectConst obj, LoRaWanConfig& lw, const StationConfig& cfg, size_t index,
+bool decodeLoRaWan(JsonObjectConst obj, UplinkType type, LoRaWanConfig& lw, const StationConfig& cfg, size_t index,
                    DecodeResult& r) {
+  const bool compact = type == UplinkType::LoRaWanCompact;
   char field[48];
   snprintf(field, sizeof(field), "uplinks[%u].devEui", static_cast<unsigned>(index));
   if (!readString(obj["devEui"], lw.devEui, sizeof(lw.devEui), field, r)) return false;
@@ -129,16 +130,28 @@ bool decodeLoRaWan(JsonObjectConst obj, LoRaWanConfig& lw, const StationConfig& 
              static_cast<unsigned>(lw.channelCount));
     if (lw.channelCount >= kMaxLppChannels) return fail(r, "%s: too many channels", field);
     LppChannel& c = lw.channels[lw.channelCount];
-    if (ch["ch"].isNull() || ch["slot"].isNull()) return fail(r, "%s: ch and slot are required", field);
-    if (!readUInt(ch["ch"], c.channel, 0, 255, field, r)) return false;
+    if (compact) {
+      // The position in the list is the layout; channel numbers and Cayenne types don't exist.
+      if (!ch["ch"].isNull() || !ch["lpp"].isNull()) return fail(r, "%s: ch/lpp are not used by lorawan-compact", field);
+      if (ch["slot"].isNull()) return fail(r, "%s: slot is required", field);
+    } else {
+      if (ch["ch"].isNull() || ch["slot"].isNull()) return fail(r, "%s: ch and slot are required", field);
+      if (!readUInt(ch["ch"], c.channel, 0, 255, field, r)) return false;
+      if (!ch["lpp"].is<const char*>() || !lppTypeFromName(ch["lpp"].as<const char*>(), c.type)) {
+        return fail(r, "%s: unknown lpp type", field);
+      }
+    }
     if (!readUInt(ch["slot"], c.slot, 0, kMaxSensors - 1, field, r)) return false;
     if (!readPhenomenon(ch["phenomenon"], c.phenomenon, field, r)) return false;
-    if (!ch["lpp"].is<const char*>() || !lppTypeFromName(ch["lpp"].as<const char*>(), c.type)) {
-      return fail(r, "%s: unknown lpp type", field);
-    }
+    if (compact && c.phenomenon == Phenomenon::Unknown) return fail(r, "%s: phenomenon is required", field);
     if (cfg.sensorBySlot(c.slot) == nullptr) return fail(r, "%s: slot %u is not configured", field, c.slot);
     for (uint8_t i = 0; i < lw.channelCount; ++i) {
-      if (lw.channels[i].channel == c.channel) return fail(r, "%s: duplicate channel %u", field, c.channel);
+      if (!compact && lw.channels[i].channel == c.channel) {
+        return fail(r, "%s: duplicate channel %u", field, c.channel);
+      }
+      if (compact && lw.channels[i].slot == c.slot && lw.channels[i].phenomenon == c.phenomenon) {
+        return fail(r, "%s: duplicate slot/phenomenon", field);
+      }
     }
     ++lw.channelCount;
   }
@@ -174,8 +187,7 @@ bool decodeRoot(JsonObjectConst root, StationConfig& cfg, DecodeResult& r) {
       if (!item["type"].is<const char*>() || !uplinkTypeFromName(item["type"].as<const char*>(), u.type)) {
         return fail(r, "uplinks[%u].type: unknown", cfg.uplinkCount);
       }
-      if (u.type == UplinkType::LoRaWanCayenne &&
-          !decodeLoRaWan(item.as<JsonObjectConst>(), u.lorawan, cfg, cfg.uplinkCount, r)) {
+      if (isLoRaWan(u.type) && !decodeLoRaWan(item.as<JsonObjectConst>(), u.type, u.lorawan, cfg, cfg.uplinkCount, r)) {
         return false;
       }
       ++cfg.uplinkCount;
@@ -197,6 +209,7 @@ bool decodeRoot(JsonObjectConst root, StationConfig& cfg, DecodeResult& r) {
 
   JsonObjectConst service = root["service"];
   if (!readUInt(service["apTimeoutMin"], cfg.service.apTimeoutMin, 1, 240, "service.apTimeoutMin", r)) return false;
+  if (!readUInt(service["idleExitSec"], cfg.service.idleExitSec, 0, 3600, "service.idleExitSec", r)) return false;
 
   JsonVariantConst deployment = root["deployment"];
   if (!deployment.isNull()) {
@@ -282,7 +295,7 @@ size_t encode(const StationConfig& cfg, char* buf, size_t cap, bool pretty) {
     const UplinkConfig& u = cfg.uplinks[i];
     JsonObject o = uplinks.add<JsonObject>();
     o["type"] = uplinkTypeName(u.type);
-    if (u.type == UplinkType::LoRaWanCayenne) {
+    if (isLoRaWan(u.type)) {
       o["devEui"] = u.lorawan.devEui;
       o["joinEui"] = u.lorawan.joinEui;
       o["intervalSec"] = u.lorawan.intervalSec;
@@ -291,10 +304,10 @@ size_t encode(const StationConfig& cfg, char* buf, size_t cap, bool pretty) {
       for (uint8_t c = 0; c < u.lorawan.channelCount; ++c) {
         const LppChannel& lc = u.lorawan.channels[c];
         JsonObject co = chs.add<JsonObject>();
-        co["ch"] = lc.channel;
+        if (u.type == UplinkType::LoRaWanCayenne) co["ch"] = lc.channel;
         co["slot"] = lc.slot;
         co["phenomenon"] = phenomenonName(lc.phenomenon);
-        co["lpp"] = lppTypeName(lc.type);
+        if (u.type == UplinkType::LoRaWanCayenne) co["lpp"] = lppTypeName(lc.type);
       }
     }
   }
@@ -304,7 +317,9 @@ size_t encode(const StationConfig& cfg, char* buf, size_t cap, bool pretty) {
   storage["highWatermarkPct"] = cfg.storage.highWatermarkPct;
   storage["minRetentionDays"] = cfg.storage.minRetentionDays;
 
-  doc["service"]["apTimeoutMin"] = cfg.service.apTimeoutMin;
+  JsonObject service = doc["service"].to<JsonObject>();
+  service["apTimeoutMin"] = cfg.service.apTimeoutMin;
+  service["idleExitSec"] = cfg.service.idleExitSec;
 
   JsonDocument deployment;
   if (deserializeJson(deployment, cfg.deploymentJson) == DeserializationError::Ok) doc["deployment"] = deployment;

@@ -67,7 +67,7 @@ Open the serial monitor at 115200 baud (`pio device monitor`). Commands are one 
 | `config` | Print the **stored** config as JSON. Secrets (the AppKey) are never included. If it differs from the running config, a note says a reboot is pending. |
 | `config-set <json>` | Replace the whole config with a JSON document on one line (see [Configuration](#configuration)). It is validated first; if anything is wrong you get `error: ...` and nothing is stored. |
 | `config-set name <name>` | Set the station name (max. 31 characters, spaces allowed). |
-| `config-set uplinks devEui <hex>` | Set the LoRaWAN DevEUI: 16 hex digits, MSB first, exactly as shown in the TTN console. Upper/lower case and separators (`70 B3 D5 …`, `70:B3:…`) are accepted. Needs a `lorawan-cayenne` uplink in the config. |
+| `config-set uplinks devEui <hex>` | Set the LoRaWAN DevEUI: 16 hex digits, MSB first, exactly as shown in the TTN console. Upper/lower case and separators (`70 B3 D5 …`, `70:B3:…`) are accepted. Needs a `lorawan-cayenne` or `lorawan-compact` uplink in the config. |
 | `config-set uplinks joinEui <hex>` | Set the LoRaWAN JoinEUI (also accepted: `appEui`). Same format as the DevEUI. |
 | `appkey <hex>` | Store the LoRaWAN AppKey: 32 hex digits, MSB first, as in the TTN console. It is stored separately from the config and never printed; `status` only shows `set` or `missing`. |
 | `service-password <password>` | Set the WiFi password of [service mode](#service-mode) (8–63 characters; default `123sensebox`). Stored like the AppKey and never printed by `status` or `config`. |
@@ -85,7 +85,7 @@ Notes:
 
 ```
 [ uptime s] L tag      message
-[    600] I cayenne  queued 23 bytes, 6 channels, time sync requested
+[    600] I uplink   queued 15 bytes, time sync requested
 ```
 
 `L` is the level: `E` error, `W` warning, `I` info, `D` debug. Debug lines only appear in the dev build (`mcu_s2_dev`).
@@ -129,13 +129,14 @@ Press BOOT only *after* the box has started. Held during power-on or reset, it p
 2. The web page usually opens by itself; otherwise open `http://192.168.4.1/`.
 
 **The web page** has, from top to bottom:
-- **Service mode:** the time until service mode closes, and the **Restart into normal mode** button.
+- **Service mode:** the time until service mode closes, the **Restart into normal mode** button, and a warning while the default WiFi password is in use.
 - **Status** (expandable): the status saved before service mode (overview, sensors, last measured values, LoRaWAN, components). It's marked *saved, not live*.
 - **Logs** (expandable):
   - **Most recent logs:** the last lines logged before service mode, with a **Download** button.
   - **Log files on the SD card:** list the newest 40 and download them. The card is read only when you press **Show log files**, and the newest file is marked.
 - **Settings** (expandable):
   - station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
+  - the service WiFi password (write-only)
   - the complete config as JSON, to edit
 - **Firmware update**, see [Firmware update (OTA)](#firmware-update-ota).
 
@@ -146,6 +147,7 @@ Changes are stored immediately and take effect after the restart.
 - `reboot` on the serial console
 - unplugging the power
 - automatically after `service.apTimeoutMin` minutes (default 15) without page requests and without a connected device
+- automatically `service.idleExitSec` seconds (default 60) after the last device left the network. Started with the button, this only counts once a device has joined.
 
 Pressing BOOT again does nothing in service mode.
 
@@ -159,9 +161,10 @@ The web page uses a small REST API, which tools can use too:
 | `POST /api/config` | store a complete config (JSON body) |
 | `POST /api/config/field` | `{"field": "name" \| "uplinks.devEui" \| "uplinks.joinEui", "value": "…"}` |
 | `POST /api/appkey` | `{"appKey": "<32 hex digits>"}` |
+| `POST /api/service-password` | `{"password": "..."}` (8–63 characters; write-only, applies after the restart) |
 | `POST /api/reboot` | restart into normal operation |
 | `POST /api/ota` | firmware update: the `.bin` file as `multipart/form-data`, e.g. `curl -F firmware=@firmware.bin http://192.168.4.1/api/ota` |
-| `GET /api/sdlogs` | log files on the SD card (newest 40: name and size), card size and free space |
+| `GET /api/sdlogs[?before=B000042-0001.log]` | log files on the SD card, newest first, 40 per page (name, size, last write `mtime` in UTC or 0 if unknown), card size and free space; `more` says whether older files are left, the next page is `?before=<oldest name shown>` |
 | `GET /api/sdlogs/file?name=B000042-0001.log` | download one log file |
 
 The SD card is not in use in service mode. Only during one of the `/api/sdlogs` requests is it mounted, and it is unmounted right after: it needs about 5–9 KB of RAM, which WiFi needs otherwise. With less than 16 KB free the request is refused (`not enough memory`).
@@ -212,19 +215,19 @@ All sections are optional; missing fields use the defaults below. Unknown fields
     { "slot": 1, "type": "sps30", "intervalSec": 60, "fanCleaningIntervalDays": 4 }
   ],
   "uplinks": [
-    { "type": "lorawan-cayenne", "devEui": "70B3D57ED0001234", "joinEui": "0000000000000000",
+    { "type": "lorawan-compact", "devEui": "70B3D57ED0001234", "joinEui": "0000000000000000",
       "intervalSec": 600, "timeSyncIntervalSec": 259200,
       "channels": [
-        { "ch": 1, "slot": 0, "phenomenon": "air_temperature",   "lpp": "temperature" },
-        { "ch": 2, "slot": 0, "phenomenon": "relative_humidity", "lpp": "relative_humidity" },
-        { "ch": 3, "slot": 1, "phenomenon": "pm2_5", "lpp": "analog_in" },
-        { "ch": 4, "slot": 1, "phenomenon": "pm10",  "lpp": "analog_in" },
-        { "ch": 5, "slot": 1, "phenomenon": "pm1",   "lpp": "analog_in" },
-        { "ch": 6, "slot": 1, "phenomenon": "pm4",   "lpp": "analog_in" }
+        { "slot": 0, "phenomenon": "air_temperature" },
+        { "slot": 0, "phenomenon": "relative_humidity" },
+        { "slot": 1, "phenomenon": "pm2_5" },
+        { "slot": 1, "phenomenon": "pm10" },
+        { "slot": 1, "phenomenon": "pm1" },
+        { "slot": 1, "phenomenon": "pm4" }
       ] }
   ],
   "storage": { "lowWatermarkPct": 10, "highWatermarkPct": 20, "minRetentionDays": 30 },
-  "service": { "apTimeoutMin": 15 },
+  "service": { "apTimeoutMin": 15, "idleExitSec": 60 },
   "deployment": { "lat": 51.03, "lon": 7.85, "heightAboveGround": 2.5 }
 }
 ```
@@ -255,7 +258,7 @@ All sections are optional; missing fields use the defaults below. Unknown fields
 | `slot` | **required** | Number of this sensor, `0`–`7`, unique. Uplink channels refer to sensors by slot. |
 | `type` | **required** | Driver: `hdc1080`, `am2315c` or `sps30` (see table below). An unknown type shows up as an `ERROR` sensor in `status`. |
 | `enabled` | `true` | `false` keeps the sensor in the config but doesn't start it. |
-| `intervalSec` | `60` | Measurement interval in seconds, `1`–`86400`. |
+| `intervalSec` | `60` | Measurement interval in seconds, `1`–`86400`. Once the clock is synced, measurements run on the UTC clock (60 → every full minute) if the interval divides a day. |
 | `calibration` | none | Per phenomenon: `{ "<phenomenon>": { "gain": 1.0, "offset": 0.0 } }`. Produces an additional *corrected* value `raw × gain + offset`; the raw value is kept. If present, averages and uploads use the corrected value. Max. 4 entries. |
 | *other numbers* | | Driver-specific parameters, e.g. `fanCleaningIntervalDays` for the SPS30. Max. 4 per sensor. |
 
@@ -279,16 +282,21 @@ All sensors use the QWIIC/I2C bus (SDA 39, SCL 40) at 100 kHz. The SPS30 needs 3
 
 ### `uplinks[]`
 
-Currently one type: `lorawan-cayenne`, which sends averages over LoRaWAN, encoded as Cayenne LPP.
+Two types send averages over LoRaWAN (TTN). They differ only in the frame format:
+
+| Type | Port | Format | TTN payload formatter | Olpe frame |
+|---|---|---|---|---|
+| `lorawan-cayenne` | 1 | Cayenne LPP: channel + type + value per value | built-in **CayenneLPP** | 23 bytes, no timestamp |
+| `lorawan-compact` | 2 | fixed layout: timestamp + values, nothing else (see [Compact frames](#compact-frames-lorawan-compact)) | custom, [tools/ttn-uplink-formatter.js](tools/ttn-uplink-formatter.js) | 15 bytes incl. timestamp |
 
 | Field | Default | Description |
 |---|---|---|
-| `type` | **required** | `lorawan-cayenne` (or `none`). |
+| `type` | **required** | `lorawan-cayenne`, `lorawan-compact` (or `none`). |
 | `devEui` | `""` | DevEUI from TTN: 16 hex digits, MSB first. Empty = LoRaWAN stays off. |
 | `joinEui` | `""` | JoinEUI / AppEUI from TTN, same format. |
-| `intervalSec` | `600` | Averaging window and send interval in seconds, `60`–`86400`. Each window's average of every channel is sent once. |
+| `intervalSec` | `600` | Averaging window and send interval in seconds, `60`–`86400`. Each window's average of every channel is sent once. Once the clock is synced, windows end on the UTC clock (600 → XX:00, XX:10, …) if the interval divides a day. |
 | `timeSyncIntervalSec` | `259200` (72 h) | How often the box asks the network for the time (LoRaWAN `DeviceTimeReq`), `3600`–`2592000`. It always asks after joining. |
-| `channels` | none | Which value is sent on which Cayenne channel, max. 16. See below. |
+| `channels` | none | Which values are sent, max. 16. See below. |
 
 The **AppKey** is not part of the config: it's a secret and is set with `appkey <hex>`.
 
@@ -296,17 +304,62 @@ The **AppKey** is not part of the config: it's a secret and is set with `appkey 
 
 | Field | Description |
 |---|---|
-| `ch` | Cayenne channel number, `0`–`255`, unique. Must match the openSenseMap `decodeOptions`. |
 | `slot` | Sensor slot the value comes from; must be a configured sensor. |
 | `phenomenon` | Which value of that sensor, e.g. `pm2_5`. |
-| `lpp` | Cayenne type: `temperature` (0.1 °C), `relative_humidity` (0.5 %), `analog_in` (0.01, range ±327.67, used for PM), `luminosity`, `barometric_pressure`, `digital_in`. |
+| `ch` | `lorawan-cayenne` only: Cayenne channel number, `0`–`255`, unique. Must match the openSenseMap `decodeOptions`. |
+| `lpp` | `lorawan-cayenne` only: Cayenne type: `temperature` (0.1 °C), `relative_humidity` (0.5 %), `analog_in` (0.01, range ±327.67, used for PM), `luminosity`, `barometric_pressure`, `digital_in`. |
+
+For `lorawan-compact` the **order** of `channels` is the frame layout; `ch` and `lpp` are rejected there.
 
 How sending works:
-- **Frames are sent on LoRaWAN port 1.** The full Olpe frame is 23 bytes.
-- **Values outside a Cayenne type's range are clamped and flagged;** e.g. PM above 327.67 µg/m³ is sent as 327.67.
-- **A sensor without valid values in a window is left out of the frame.** Note that the openSenseMap then stores `0` for its channels.
+- **Windows end on full intervals of the UTC clock** once the clock is synced, e.g. XX:10:00. The window is closed 5 s later, so the measurement taken exactly at XX:10:00 is part of it. Before the first time sync, windows run from the start of the box.
+- **Each box sends with its own fixed delay** of 0–120 s after the window end (derived from the DevEUI, at most a quarter of the interval), so boxes of one deployment don't collide at the gateway. With `lorawan-compact` the frame still carries XX:10:00.
+- **Values outside the encoding's range are clamped and flagged;** e.g. with Cayenne, PM above 327.67 µg/m³ is sent as 327.67.
+- **A sensor without valid values in a window:** Cayenne leaves its channels out of the frame (the openSenseMap then stores `0`); compact sends a "missing" marker and the formatter leaves the field out.
 - **Missed windows are not sent later** (e.g. while not joined): the openSenseMap would timestamp them with the arrival time.
 - **TTN's fair-use limit of 30 s airtime per day is tracked.** When the budget is used up (slow spreading factors, short intervals), windows are skipped and logged.
+
+#### Compact frames (`lorawan-compact`)
+
+The frame has no channel or type bytes: the TTN formatter knows the layout. For the Olpe config that is 15 bytes instead of 23 (Cayenne without timestamp), and the measurement time is included.
+
+| Bytes | Content | Encoding (big endian) | "Missing" marker |
+|---|---|---|---|
+| 0–3 | window end (e.g. XX:10:00 UTC) | Unix seconds, `uint32`; `0` = box has no time yet | – |
+| then, per entry of `channels`, in config order: | | | |
+| 2 | `air_temperature` | `int16`, 0.01 °C (±327.67) | `0x8000` |
+| 1 | `relative_humidity` | `uint8`, 0.5 % | `0xFF` |
+| 2 | `pm1`, `pm2_5`, `pm4`, `pm10` | `uint16`, 0.1 µg/m³ (0–6553.4) | `0xFFFF` |
+
+Example (Olpe config): window end 2025-10-10 12:10:00 UTC, 22.86 °C, 60 %, PM2.5 12.3, PM10 15.0, PM1 8.1, PM4 13.2:
+
+```
+68 E8 F7 98 | 08 EE | 78 | 00 7B | 00 96 | 00 51 | 00 84
+time          temp    rh   pm2_5   pm10    pm1     pm4
+```
+
+**Setting it up in TTN:**
+1. In the TTN console, open the application (or a single device) → **Payload formatters** → **Uplink**.
+2. Formatter type **Custom Javascript formatter**, paste the content of [tools/ttn-uplink-formatter.js](tools/ttn-uplink-formatter.js), save.
+3. Check that the `LAYOUT` list at the top of the formatter has the same phenomena in the same order as `channels` in the box config. For the Olpe config it already does.
+4. **Test it** under "Test" in the formatter page: FPort `2`, byte payload `68E8F79808EE78007B009600510084`. The result must be:
+
+   ```json
+   {
+     "unixtime": 1760098200,
+     "measured_at": "2025-10-10T12:10:00.000Z",
+     "temperature_1": 22.86,
+     "relative_humidity_2": 60,
+     "analog_in_3": 12.3,
+     "analog_in_4": 15,
+     "analog_in_5": 8.1,
+     "analog_in_6": 13.2
+   }
+   ```
+
+`measured_at` is the time the averages belong to; TTN's `received_at` is a few seconds to two minutes later. Frames sent before the box's first time sync have no `measured_at`. A sensor without values in a window has no field.
+
+The field names (`temperature_1`, `analog_in_3`, …) are chosen to match TTN's CayenneLPP formatter, so the openSenseMap `cayenne-lpp` profile keeps working with the same `decodeOptions` as a Cayenne box (it uses the arrival time, not `measured_at`). On the openSenseMap box, the TTN **port** must be empty or `2`.
 
 ### `storage`
 
@@ -321,6 +374,7 @@ How sending works:
 | Field | Default | Description |
 |---|---|---|
 | `apTimeoutMin` | `15` | Service mode ends (restart into normal operation) after this many minutes without page requests and without a connected device, `1`–`240`. |
+| `idleExitSec` | `60` | Service mode ends this many seconds after the last device left the network (counted once a device has joined), `0`–`3600` (`0` = off). |
 
 ### Quality flags
 
@@ -369,7 +423,7 @@ utc,uptime_s,slot,phenomenon,kind,value,unit,quality
 - `kind` is `raw`, `corrected` (calibration) or `aggregated` (10-min mean of the uplink window).
 - `quality` uses the [quality flags](#quality-flags).
 
-**Log lines:** `2026-10-14T09:31:01Z [    261] I cayenne  queued 23 bytes, 6 channels`, with `-` instead of the date before the first time sync.
+**Log lines:** `2026-10-14T09:31:01Z [    261] I uplink   queued 15 bytes`, with `-` instead of the date before the first time sync.
 
 **Buffering:** lines are collected in RAM and written every 15 seconds (sooner when the buffer fills up), so a crash or power cut loses at most the last 15 seconds.
 
@@ -400,7 +454,7 @@ The check runs after mounting and every 10 minutes. Each deleted file is logged.
    - Frequency plan: EU868
    - LoRaWAN version: **1.0.3**
    - Activation: OTAA
-2. **Set the TTN uplink payload formatter** (application or device) to **CayenneLPP**.
+2. **Set the TTN uplink payload formatter** (application or device) to **CayenneLPP** for `lorawan-cayenne`. For `lorawan-compact` use the custom formatter instead, see [Compact frames](#compact-frames-lorawan-compact).
 3. **Put the TTN keys into the box** via the console:
    ```
    config-set {"schemaVersion":1,"station":{"name":"my-test-box"},"sensors":[{"slot":0,"type":"hdc1080","intervalSec":60}],"uplinks":[{"type":"lorawan-cayenne","intervalSec":600,"channels":[{"ch":1,"slot":0,"phenomenon":"air_temperature","lpp":"temperature"},{"ch":2,"slot":0,"phenomenon":"relative_humidity","lpp":"relative_humidity"}]}]}

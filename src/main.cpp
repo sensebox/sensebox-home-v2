@@ -11,7 +11,6 @@
 #include "BootGuard.h"
 #include "BootMode.h"
 #include "ButtonDetector.h"
-#include "CayenneUplink.h"
 #include "Clock.h"
 #include "ConfigCodec.h"
 #include "ConfigEditor.h"
@@ -19,12 +18,13 @@
 #include "Health.h"
 #include "LatestValues.h"
 #include "LmicTransport.h"
+#include "LoRaWanUplink.h"
 #include "Log.h"
 #include "PersistentStore.h"
 #include "Pipeline.h"
 #include "SdCardFs.h"
-#include "SelfTest.h"
 #include "SdStore.h"
+#include "SelfTest.h"
 #include "SensorManager.h"
 #include "SerialConsole.h"
 #include "ServiceMode.h"
@@ -44,7 +44,12 @@ extern const char olpeTemplateJson[] asm("_binary_config_olpe_template_json_star
 namespace {
 
 constexpr const char* kTag = "main";
-constexpr uint32_t kLoopDelayMs = 10;
+// Normal and safe mode: one pass per second is enough for sensors, uplink and SD (LoRaWAN timing
+// lives in the LMIC task). While the button is held or console input waits, passes run faster.
+// Service mode: every HTTP request and DNS query waits for the next pass, so it stays at 100 ms.
+constexpr uint32_t kLoopPeriodMs = 1000;
+constexpr uint32_t kFastLoopPeriodMs = 50;
+constexpr uint32_t kServiceLoopPeriodMs = 100;
 constexpr uint32_t kStatusLogIntervalMs = 5u * 60u * 1000u;
 
 uint64_t uptimeMs() { return sysinfo::uptimeMs(); }
@@ -82,7 +87,7 @@ config::StationConfig g_config;
 Pipeline g_pipeline(g_config);
 SensorManager g_sensors(g_clock, g_health, g_pipeline);
 LmicTransport g_lora(g_clock, g_health);
-CayenneUplink* g_cayenne = nullptr;  // created at setup if configured
+LoRaWanUplink* g_uplink = nullptr;  // created at setup if configured
 SdCardFs g_sdCard;
 SdStore g_sd(g_sdCard, g_clock, g_health);
 SinkFanout g_windowMeans;  // 10-min means of the uplink: log + SD card
@@ -100,6 +105,7 @@ ServiceMode g_service;
 HealthRegistry::Id g_configHealth = HealthRegistry::kInvalid;
 uint32_t g_lastStatusLogMs = 0;
 bool g_serviceRequested = false;  // BOOT held long enough; restart when it is released
+persist::DeviceIdentity g_identity{};
 
 void loadConfig() {
   g_configHealth = g_health.add("config");
@@ -160,7 +166,7 @@ void logSensorBus() {
 void startUplinks() {
   for (uint8_t i = 0; i < g_config.uplinkCount; ++i) {
     const config::UplinkConfig& u = g_config.uplinks[i];
-    if (u.type != config::UplinkType::LoRaWanCayenne || g_cayenne != nullptr) continue;
+    if (!config::isLoRaWan(u.type) || g_uplink != nullptr) continue;
 
     uint8_t appKey[16];
     if (persist::readSecret(persist::secret::kLoRaAppKey, appKey, sizeof(appKey)) == sizeof(appKey)) {
@@ -171,13 +177,13 @@ void startUplinks() {
     }
     memset(appKey, 0, sizeof(appKey));
 
-    g_cayenne = new CayenneUplink(g_config, u.lorawan, g_clock, g_health, g_lora);
-    g_cayenne->setAggregateSink(&g_windowMeans);
-    g_cayenne->begin(millis());
-    g_pipeline.addSink(g_cayenne);
+    g_uplink = new LoRaWanUplink(g_config, u.type, u.lorawan, g_clock, g_health, g_lora);
+    g_uplink->setAggregateSink(&g_windowMeans);
+    g_uplink->begin(millis());
+    g_pipeline.addSink(g_uplink);
   }
   // No LoRaWAN target: the transport never starts, so it isn't "connecting" either.
-  if (g_cayenne == nullptr) g_health.setStatus(g_health.add("lorawan"), ComponentStatus::Disabled);
+  if (g_uplink == nullptr) g_health.setStatus(g_health.add("lorawan"), ComponentStatus::Disabled);
   if (g_config.uplinkCount == 0) LOGI(kTag, "no data target configured: measuring only");
 }
 
@@ -242,6 +248,16 @@ void handleButton(uint32_t nowMs) {
   if (g_serviceRequested && !g_button.pressed()) enterServiceMode(nowMs);
 }
 
+// Fixed loop rate without catch-up bursts: waits the rest of the period after this pass's work.
+void waitForNextPass(uint32_t passStartMs, uint32_t periodMs) {
+  const uint32_t spent = millis() - passStartMs;
+  vTaskDelay(pdMS_TO_TICKS(spent < periodMs ? periodMs - spent : 1));
+}
+
+bool wantsFastLoop() {
+  return g_serviceRequested || g_button.pressed() || board::serviceButtonPressed() || Serial.available() > 0;
+}
+
 void startServiceMode() {
   sysinfo::breadcrumb("service");
   g_led.setMode(StatusLed::Mode::ServiceMode);
@@ -252,14 +268,13 @@ void startServiceMode() {
   const bool haveSnapshot = snapshot::isValid(snap);
   LOGI(kTag, "SERVICE MODE: sensors and LoRaWAN are off%s", haveSnapshot ? "" : " (no saved status)");
 
-  persist::DeviceIdentity id{};
-  persist::loadIdentity(id);
   ServiceMode::Options options;
   options.running = &g_config;
   options.snapshot = haveSnapshot ? &snap : nullptr;
-  options.deviceSerial = id.serial;
-  options.boardRevision = id.hardware;
+  options.deviceSerial = g_identity.serial;
+  options.boardRevision = g_identity.hardware;
   options.apTimeoutMin = g_config.service.apTimeoutMin;
+  options.idleExitSec = g_config.service.idleExitSec;
   if (!g_service.begin(options)) {
     LOGE(kTag, "service mode could not start; console still works, 'reboot' to return to normal mode");
   }
@@ -295,9 +310,8 @@ void setup() {
   persist::saveUnhealthyBoots(g_bootGuard.onBoot(persist::loadUnhealthyBoots(), sysinfo::lastResetWasAbnormal()));
   g_app.safeMode = g_bootGuard.safeMode();
 
-  persist::DeviceIdentity id;
-  if (persist::loadIdentity(id)) {
-    LOGI(kTag, "device %s, hardware %s, batch %s", id.serial, id.hardware, id.batch);
+  if (persist::loadIdentity(g_identity)) {
+    LOGI(kTag, "device %s, hardware %s, batch %s", g_identity.serial, g_identity.hardware, g_identity.batch);
   } else {
     LOGW(kTag, "no device identity (factory_id partition empty)");
   }
@@ -359,14 +373,14 @@ void loop() {
     if (Serial.available() > 0) g_service.markActivity();
     g_console.poll(nowMs);
     g_led.tick(nowMs, g_health);
-    vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));
+    waitForNextPass(nowMs, kServiceLoopPeriodMs);
     return;
   }
 
   if (!g_app.safeMode) {
     g_sensors.tick(nowMs);
     g_lora.poll(nowMs);
-    if (g_cayenne != nullptr) g_cayenne->tick(nowMs);
+    if (g_uplink != nullptr) g_uplink->tick(nowMs);
     g_sd.tick(nowMs);
   }
   if (g_bootGuard.tick(nowMs)) {
@@ -380,5 +394,5 @@ void loop() {
   g_led.tick(nowMs, g_health);
   periodicStatusLog(nowMs);
 
-  vTaskDelay(pdMS_TO_TICKS(kLoopDelayMs));
+  waitForNextPass(nowMs, wantsFastLoop() ? kFastLoopPeriodMs : kLoopPeriodMs);
 }

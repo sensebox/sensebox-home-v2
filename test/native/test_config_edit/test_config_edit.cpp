@@ -73,7 +73,7 @@ void test_invalid_euis_are_rejected() {
 void test_eui_without_lorawan_uplink() {
   g_cfg.uplinkCount = 0;
   TEST_ASSERT_FALSE(setField(g_cfg, Field::LoRaWanDevEui, "70B3D57ED0001234", g_err, sizeof(g_err)));
-  TEST_ASSERT_NOT_NULL(strstr(g_err, "no lorawan"));
+  TEST_ASSERT_NOT_NULL(strstr(g_err, "no LoRaWAN uplink"));
 }
 
 void test_edited_config_survives_roundtrip() {

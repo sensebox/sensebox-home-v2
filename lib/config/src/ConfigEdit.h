@@ -12,8 +12,8 @@ namespace config {
 enum class Field : unsigned char {
   Unknown = 0,
   Name,           // station.name
-  LoRaWanDevEui,  // first lorawan-cayenne uplink: devEui
-  LoRaWanJoinEui, // first lorawan-cayenne uplink: joinEui
+  LoRaWanDevEui,  // first LoRaWAN uplink: devEui
+  LoRaWanJoinEui, // first LoRaWAN uplink: joinEui
 };
 
 // Maps a console path to a field, case-insensitive: "name", "uplinks devEui", "uplinks joinEui"

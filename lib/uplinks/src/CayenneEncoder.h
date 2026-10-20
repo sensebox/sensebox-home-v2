@@ -12,6 +12,8 @@
 
 namespace cayenne {
 
+constexpr uint8_t kPort = 1;
+
 // LoRaWAN EU868 maximum application payload at the slowest data rate (DR0 / SF12).
 constexpr size_t kMaxPayload = 51;
 

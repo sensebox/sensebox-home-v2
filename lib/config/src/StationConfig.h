@@ -68,6 +68,7 @@ enum class LppType : uint8_t {
 const char* lppTypeName(LppType t);
 bool lppTypeFromName(const char* name, LppType& out);
 
+// One value of the frame. lorawan-compact uses only slot and phenomenon (the order is the layout).
 struct LppChannel {
   uint8_t channel = 0;
   uint8_t slot = 0;
@@ -75,10 +76,14 @@ struct LppChannel {
   LppType type = LppType::Unknown;
 };
 
-enum class UplinkType : uint8_t { None = 0, LoRaWanCayenne };
+// lorawan-cayenne: Cayenne LPP on port 1, decodable by TTN's built-in formatter.
+// lorawan-compact: fixed layout (window end time + values in `channels` order, no channel/type
+// bytes) on port 2; needs the TTN formatter from tools/ttn-uplink-formatter.js.
+enum class UplinkType : uint8_t { None = 0, LoRaWanCayenne, LoRaWanCompact };
 
 const char* uplinkTypeName(UplinkType t);
 bool uplinkTypeFromName(const char* name, UplinkType& out);
+inline bool isLoRaWan(UplinkType t) { return t == UplinkType::LoRaWanCayenne || t == UplinkType::LoRaWanCompact; }
 
 struct LoRaWanConfig {
   char devEui[kEuiHexLen + 1] = {};   // not secret
@@ -103,6 +108,9 @@ struct StorageConfig {
 
 struct ServiceConfig {
   uint16_t apTimeoutMin = 15;
+  // Service mode ends this many seconds after the last device left the AP (0 = off; then only
+  // apTimeoutMin applies).
+  uint16_t idleExitSec = 60;
 };
 
 struct StationConfig {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "StationConfig.h"
@@ -10,7 +11,8 @@
 // Runs INSTEAD of normal operation (no sensors, no LoRaWAN): the MCU S2 has no PSRAM and the
 // WiFi stack alone needs a large part of the RAM. The status of normal operation comes from the
 // snapshot taken before the restart. Leaving service mode = restart (reboot button in the web UI,
-// `reboot` on the console, power cycle, or the inactivity timeout).
+// `reboot` on the console, power cycle, the inactivity timeout, or no device connected for
+// `idleExitSec`).
 // Activity = a device joining the AP, page loads, user actions in the web UI and console input.
 // A phone that just stays connected, the UI's automatic status poll and the OS's captive-portal
 // probes do not count.
@@ -22,10 +24,12 @@
 //   POST /api/config        complete config JSON
 //   POST /api/config/field  {"field":"name"|"uplinks.devEui"|"uplinks.joinEui","value":"..."}
 //   POST /api/appkey        {"appKey":"<32 hex>"}  (write-only)
+//   POST /api/service-password {"password":"..."}  WiFi password of this AP (write-only)
 //   POST /api/reboot        restart into normal mode
 //   POST /api/ota           firmware update: multipart/form-data with the .bin file (any field
 //                           name); on success the box restarts into the new firmware
-//   GET  /api/sdlogs        log files on the SD card (newest 40: name, size), card size/free
+//   GET  /api/sdlogs[?before=<name>]  log files on the SD card, newest first, 40 per page (name,
+//                           size, mtime), card size/free, `more`; next page: before=<oldest shown>
 //   GET  /api/sdlogs/file?name=B000042-0001.log   download one log file
 // The SD card is only mounted while one of the /api/sdlogs requests runs (RAM, see .cpp).
 
@@ -37,6 +41,7 @@ class ServiceMode {
     const char* deviceSerial = "";             // for the SSID; MAC is used if empty
     const char* boardRevision = "";            // hardware revision, checked against OTA images
     uint16_t apTimeoutMin = 15;
+    uint16_t idleExitSec = 60;  // 0 = off
   };
 
   // Starts AP, DNS and web server. Returns false if WiFi or memory fails.
@@ -51,3 +56,6 @@ class ServiceMode {
   // Seconds until the inactivity timeout restarts the box.
   uint32_t secondsLeft(uint32_t nowMs) const;
 };
+
+// Name of the service-mode access point: senseBox-<serial>, or the end of the MAC.
+void serviceApSsid(char* out, size_t cap, const char* deviceSerial);

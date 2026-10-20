@@ -63,6 +63,7 @@ bool lppTypeFromName(const char* name, LppType& out) {
 const char* uplinkTypeName(UplinkType t) {
   switch (t) {
     case UplinkType::LoRaWanCayenne: return "lorawan-cayenne";
+    case UplinkType::LoRaWanCompact: return "lorawan-compact";
     case UplinkType::None: return "none";
   }
   return "none";
@@ -72,6 +73,10 @@ bool uplinkTypeFromName(const char* name, UplinkType& out) {
   if (name == nullptr) return false;
   if (strcmp(name, "lorawan-cayenne") == 0) {
     out = UplinkType::LoRaWanCayenne;
+    return true;
+  }
+  if (strcmp(name, "lorawan-compact") == 0) {
+    out = UplinkType::LoRaWanCompact;
     return true;
   }
   if (strcmp(name, "none") == 0) {

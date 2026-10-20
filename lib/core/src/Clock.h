@@ -38,6 +38,10 @@ class Clock {
 
   // Current UTC seconds, or 0 if not synced.
   uint32_t nowUtc() const;
+  // Current UTC milliseconds, or 0 if not synced.
+  uint64_t nowUtcMs() const;
+  // Counts successful setUtc() calls, so schedules on the UTC grid notice a (re)sync.
+  uint32_t syncCount() const { return syncCount_; }
 
   // Timestamp for a new measurement: UTC if synced, otherwise uptime seconds.
   // ORs quality::kTimeUnsynced into `quality` when not synced.
@@ -59,4 +63,5 @@ class Clock {
   // UTC (ms) corresponding to uptime 0. Valid when synced.
   int64_t utcAtBootMs_ = 0;
   uint64_t lastSyncUptimeMs_ = 0;
+  uint32_t syncCount_ = 0;
 };

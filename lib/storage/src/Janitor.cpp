@@ -5,7 +5,9 @@ namespace janitor {
 Action decide(const Facts& f, const Limits& limits, bool& cleaning) {
   if (f.totalBytes == 0) return Action::None;
 
-  if (f.logFiles > limits.maxLogFiles && f.haveOldestLog) return Action::DeleteOldestLog;
+  const bool tooManyLogs = f.logFiles > limits.maxLogFiles;
+  const bool logsTooBig = static_cast<uint64_t>(f.rotatedLogFiles) * limits.logFileBytes > limits.maxLogBytes;
+  if ((tooManyLogs || logsTooBig) && f.haveOldestLog) return Action::DeleteOldestLog;
 
   const uint64_t low = f.totalBytes / 100 * limits.lowWatermarkPct;
   const uint64_t high = f.totalBytes / 100 * limits.highWatermarkPct;
@@ -26,13 +28,12 @@ Action decide(const Facts& f, const Limits& limits, bool& cleaning) {
   return overLimit ? Action::Full : Action::None;
 }
 
-uint32_t maxLogFilesFor(uint64_t totalBytes, uint32_t logFileBytes) {
-  if (logFileBytes == 0) return 4;
+uint64_t maxLogBytesFor(uint64_t totalBytes, uint32_t logFileBytes) {
   uint64_t budget = totalBytes / 10;
   const uint64_t cap = 100ull * 1024 * 1024;
   if (budget > cap) budget = cap;
-  const uint64_t files = budget / logFileBytes;
-  return files < 4 ? 4 : static_cast<uint32_t>(files);
+  const uint64_t min = 4ull * logFileBytes;
+  return budget < min ? min : budget;
 }
 
 }  // namespace janitor

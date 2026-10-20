@@ -89,22 +89,32 @@ void SensorManager::tickSlot(Slot& s, uint32_t nowMs) {
       } else if (st == SensorState::Ready) {
         LOGI(kTag, "slot %u: %s ready", s.cfg.slot, s.cfg.type);
         enterPhase(s, Phase::Running, nowMs);
-        s.nextMeasureMs = nowMs;
+        if (onGrid(s)) {
+          scheduleOnGrid(s, nowMs);
+        } else {
+          s.nextMeasureMs = nowMs;
+        }
       } else if (nowMs - s.phaseStartMs > d.initTimeoutMs) {
         handleError(s, SensorError::Timeout, nowMs);
       }
       break;
 
     case Phase::Running:
+      // First sync (or a resync): move the schedule onto the new grid.
+      if (onGrid(s) && s.gridSync != clock_.syncCount()) scheduleOnGrid(s, nowMs);
       if (st == SensorState::Error) {
         handleError(s, sensor.lastError(), nowMs);
       } else if (st == SensorState::Ready && timeReached(nowMs, s.nextMeasureMs)) {
         if (sensor.requestMeasurement(nowMs)) {
           enterPhase(s, Phase::Measuring, nowMs);
-          const uint32_t intervalMs = s.cfg.intervalSec * 1000u;
-          s.nextMeasureMs += intervalMs;
-          // Don't try to catch up missed measurements after a long outage.
-          if (timeReached(nowMs, s.nextMeasureMs)) s.nextMeasureMs = nowMs + intervalMs;
+          if (onGrid(s)) {
+            scheduleOnGrid(s, nowMs);
+          } else {
+            const uint32_t intervalMs = s.cfg.intervalSec * 1000u;
+            s.nextMeasureMs += intervalMs;
+            // Don't try to catch up missed measurements after a long outage.
+            if (timeReached(nowMs, s.nextMeasureMs)) s.nextMeasureMs = nowMs + intervalMs;
+          }
           // A driver that measures synchronously has its results available right away.
           const uint8_t n = sensor.takeResults(readings_, Sensor::kMaxReadings);
           if (n > 0) emitResults(s, n);
@@ -136,6 +146,16 @@ void SensorManager::tickSlot(Slot& s, uint32_t nowMs) {
     case Phase::NoDriver:
       break;
   }
+}
+
+// With a synced clock and an interval that divides a day, measurements follow the UTC grid
+// (60 s -> every full minute), so window means cover the same samples on every box.
+// Before the first sync they run relative to the sensor start.
+bool SensorManager::onGrid(const Slot& s) const { return clock_.isSynced() && alignsToDay(s.cfg.intervalSec); }
+
+void SensorManager::scheduleOnGrid(Slot& s, uint32_t nowMs) {
+  s.nextMeasureMs = nowMs + msToNextMultiple(clock_.nowUtcMs(), s.cfg.intervalSec * 1000u);
+  s.gridSync = clock_.syncCount();
 }
 
 void SensorManager::handleError(Slot& s, SensorError error, uint32_t nowMs) {

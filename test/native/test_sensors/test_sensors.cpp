@@ -165,6 +165,40 @@ void test_measures_on_interval_and_stamps_measurements() {
   TEST_ASSERT_EQUAL(static_cast<int>(ComponentStatus::Ok), static_cast<int>(health.overall()));
 }
 
+void test_measures_on_full_minutes_once_synced() {
+  Clock clock(fakeUptimeMs);
+  HealthRegistry health(fakeUptimeS);
+  CollectSink sink;
+  SensorManager mgr(clock, health, sink);
+  addSensor(0, "fake", 60);
+  mgr.configure(g_cfg, kDrivers, 1);
+  mgr.begin(0);
+
+  // Unsynced: first measurement right after Ready, then every 60 s from there.
+  runUntil(mgr, 1000);
+  TEST_ASSERT_EQUAL(2, sink.count);
+
+  // Sync at uptime 10 s to 23.4 s past a full minute: the schedule moves onto the grid.
+  constexpr uint64_t kGridUtcMs = 1760000400000ull;  // a full 10 minutes
+  TEST_ASSERT_TRUE(clock.setUtc(kGridUtcMs + 23400, 10000, TimeSource::LoRaWan));
+  runUntil(mgr, 10000 + 36500);
+  TEST_ASSERT_EQUAL(2, sink.count);
+  runUntil(mgr, 10000 + 36700);
+  TEST_ASSERT_EQUAL(4, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(0, sink.items[2].timestamp % 60);
+  TEST_ASSERT_FALSE(sink.items[2].quality & quality::kTimeUnsynced);
+
+  runUntil(mgr, 10000 + 36700 + 60000);
+  TEST_ASSERT_EQUAL(6, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(sink.items[2].timestamp + 60, sink.items[4].timestamp);
+
+  // A resync that shifts the clock by 2 s keeps the measurements on the full minute.
+  TEST_ASSERT_TRUE(clock.setUtc(clock.nowUtcMs() + 2000, g_uptimeMs, TimeSource::LoRaWan));
+  runUntil(mgr, g_uptimeMs + 60000);
+  TEST_ASSERT_EQUAL(8, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(0, sink.items[6].timestamp % 60);
+}
+
 void test_out_of_range_reading_is_flagged() {
   Clock clock(fakeUptimeMs);
   HealthRegistry health(fakeUptimeS);
@@ -300,6 +334,7 @@ void test_async_measurement() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_measures_on_interval_and_stamps_measurements);
+  RUN_TEST(test_measures_on_full_minutes_once_synced);
   RUN_TEST(test_out_of_range_reading_is_flagged);
   RUN_TEST(test_missing_sensor_retries_with_backoff_and_recovers);
   RUN_TEST(test_measurement_timeout_is_an_error);

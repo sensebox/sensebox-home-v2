@@ -1,0 +1,12 @@
+# senseBox:home v2: AM2315C + SPS30, LoRaWAN lorawan-compact (15-byte frame incl. timestamp)
+# Generated from config/olpe-template.json. Paste the lines below one by one into the serial
+# console (pio device monitor) and replace the <...> placeholders. Lines starting with # are notes.
+# TTN uplink formatter: tools/ttn-uplink-formatter.js (port 2), see README "Compact frames".
+
+config-set {"schemaVersion":1,"station":{"name":"","timezone":"Europe/Berlin"},"sensors":[{"slot":0,"type":"am2315c","intervalSec":60},{"slot":1,"type":"sps30","intervalSec":60,"fanCleaningIntervalDays":4}],"uplinks":[{"type":"lorawan-compact","devEui":"","joinEui":"0000000000000000","intervalSec":600,"timeSyncIntervalSec":259200,"channels":[{"slot":0,"phenomenon":"air_temperature"},{"slot":0,"phenomenon":"relative_humidity"},{"slot":1,"phenomenon":"pm2_5"},{"slot":1,"phenomenon":"pm10"},{"slot":1,"phenomenon":"pm1"},{"slot":1,"phenomenon":"pm4"}]}],"storage":{"lowWatermarkPct":10,"highWatermarkPct":20,"minRetentionDays":30},"service":{"apTimeoutMin":15},"deployment":{}}
+config-set name <station name>
+config-set uplinks devEui <DevEUI from TTN>
+config-set uplinks joinEui <JoinEUI from TTN>
+appkey <AppKey from TTN>
+config
+reboot

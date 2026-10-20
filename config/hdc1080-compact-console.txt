@@ -1,0 +1,12 @@
+# senseBox:home v2: HDC1080, LoRaWAN lorawan-compact (7-byte frame incl. timestamp)
+# Generated from config/examples/hdc1080-compact.json. Paste the lines below one by one into the
+# serial console (pio device monitor) and replace the <...> placeholders. Lines starting with # are notes.
+# TTN uplink formatter: tools/ttn-uplink-formatter-hdc1080.js (port 2).
+
+config-set {"schemaVersion":1,"station":{"name":"","timezone":"Europe/Berlin"},"sensors":[{"slot":0,"type":"hdc1080","intervalSec":60}],"uplinks":[{"type":"lorawan-compact","devEui":"","joinEui":"","intervalSec":600,"timeSyncIntervalSec":259200,"channels":[{"slot":0,"phenomenon":"air_temperature"},{"slot":0,"phenomenon":"relative_humidity"}]}]}
+config-set name <station name>
+config-set uplinks devEui <DevEUI from TTN>
+config-set uplinks joinEui <JoinEUI from TTN>
+appkey <AppKey from TTN>
+config
+reboot

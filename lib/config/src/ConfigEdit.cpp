@@ -14,7 +14,7 @@ bool equalsIgnoreCase(const char* a, const char* b) { return a != nullptr && b !
 
 LoRaWanConfig* firstLoRaWan(StationConfig& cfg) {
   for (uint8_t i = 0; i < cfg.uplinkCount; ++i) {
-    if (cfg.uplinks[i].type == UplinkType::LoRaWanCayenne) return &cfg.uplinks[i].lorawan;
+    if (isLoRaWan(cfg.uplinks[i].type)) return &cfg.uplinks[i].lorawan;
   }
   return nullptr;
 }
@@ -66,7 +66,7 @@ bool setField(StationConfig& cfg, Field field, const char* value, char* err, siz
     case Field::LoRaWanJoinEui: {
       LoRaWanConfig* lw = firstLoRaWan(cfg);
       if (lw == nullptr) {
-        snprintf(err, errLen, "no lorawan-cayenne uplink configured");
+        snprintf(err, errLen, "no LoRaWAN uplink configured");
         return false;
       }
       char eui[kEuiHexLen + 1];

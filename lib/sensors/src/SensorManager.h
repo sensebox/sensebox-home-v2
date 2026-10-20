@@ -10,7 +10,8 @@
 #include "StationConfig.h"
 
 // Owns the configured sensor instances and runs them (plan §4.3):
-// scheduling per interval, init/measure timeouts, error counting, retry with exponential
+// scheduling per interval (on the UTC grid once the clock is synced, e.g. every full minute),
+// init/measure timeouts, error counting, retry with exponential
 // backoff, health reporting. A failing sensor never affects the others.
 
 struct SensorSlotStatus {
@@ -58,6 +59,7 @@ class SensorManager {
     Phase phase = Phase::Disabled;
     uint32_t phaseStartMs = 0;
     uint32_t nextMeasureMs = 0;
+    uint32_t gridSync = 0;  // Clock::syncCount() the schedule was aligned to
     uint32_t retryAtMs = 0;
     uint8_t retryAttempt = 0;
     uint32_t errorCount = 0;
@@ -67,6 +69,8 @@ class SensorManager {
   };
 
   void tickSlot(Slot& s, uint32_t nowMs);
+  bool onGrid(const Slot& s) const;
+  void scheduleOnGrid(Slot& s, uint32_t nowMs);
   void enterPhase(Slot& s, Phase phase, uint32_t nowMs);
   void handleError(Slot& s, SensorError error, uint32_t nowMs);
   void emitResults(Slot& s, uint8_t count);

@@ -59,7 +59,7 @@ void captureStatus(const App& app, const LatestValues& latest, uint32_t nowMs, S
   }
 
   for (uint8_t i = 0; i < app.config.uplinkCount; ++i) {
-    if (app.config.uplinks[i].type == config::UplinkType::LoRaWanCayenne) out.lorawan.configured = true;
+    if (config::isLoRaWan(app.config.uplinks[i].type)) out.lorawan.configured = true;
   }
   const LmicTransport::Status ls = app.lora.status(nowMs);
   out.lorawan.appKeySet = persist::hasSecret(persist::secret::kLoRaAppKey);

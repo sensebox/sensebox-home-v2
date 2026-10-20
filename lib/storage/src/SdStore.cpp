@@ -24,6 +24,7 @@ const char* baseName(const char* path) {
 struct ScanCtx {
   const char* current;
   uint32_t count = 0;
+  uint32_t laterParts = 0;  // files with part > 1: each one means its predecessor was full
   bool have = false;
   uint64_t minKey = 0;
   char minName[24] = {};  // "B000042-0001.csv"
@@ -35,6 +36,7 @@ void onFile(const char* name, void* p) {
   uint16_t part;
   if (!storagefmt::parseFileName(name, boot, part)) return;  // not ours: never touched
   ++ctx.count;
+  if (part > 1) ++ctx.laterParts;
   if (strcmp(name, ctx.current) == 0) return;
   const uint64_t key = storagefmt::fileKey(boot, part);
   if (ctx.have && key >= ctx.minKey) return;
@@ -343,6 +345,7 @@ void SdStore::runJanitor(uint32_t nowMs) {
   facts.totalBytes = total;
   facts.freeBytes = free;
   facts.logFiles = logs.count;
+  facts.rotatedLogFiles = logs.laterParts;
   facts.haveOldestLog = logs.have;
   facts.haveOldestData = data.have;
   if (data.have) {
@@ -355,7 +358,8 @@ void SdStore::runJanitor(uint32_t nowMs) {
   limits.lowWatermarkPct = opt_.storage.lowWatermarkPct;
   limits.highWatermarkPct = opt_.storage.highWatermarkPct;
   limits.minRetentionDays = opt_.storage.minRetentionDays;
-  limits.maxLogFiles = janitor::maxLogFilesFor(total, opt_.maxLogFileBytes);
+  limits.maxLogBytes = janitor::maxLogBytesFor(total, opt_.maxLogFileBytes);
+  limits.logFileBytes = opt_.maxLogFileBytes;
 
   char victim[storagefmt::kPathLen] = {};
   switch (janitor::decide(facts, limits, cleaning_)) {

@@ -219,7 +219,9 @@ void test_janitor_watermarks_and_hysteresis() {
 
 void test_janitor_logs_first_and_log_cap() {
   janitor::Limits lim;
-  lim.maxLogFiles = 5;
+  lim.maxLogFiles = 1000;
+  lim.logFileBytes = 1024 * 1024;
+  lim.maxLogBytes = 5ull * 1024 * 1024;
   janitor::Facts f;
   f.totalBytes = 1000ull * 1024 * 1024;
   f.freeBytes = f.totalBytes / 2;  // plenty of space
@@ -227,9 +229,18 @@ void test_janitor_logs_first_and_log_cap() {
   f.haveOldestData = true;
   bool cleaning = false;
 
-  f.logFiles = 5;
+  f.logFiles = 8;
+  f.rotatedLogFiles = 5;
   TEST_ASSERT_EQUAL(static_cast<int>(janitor::Action::None), static_cast<int>(janitor::decide(f, lim, cleaning)));
-  f.logFiles = 6;  // over the cap: delete a log even though space is fine
+  f.rotatedLogFiles = 6;  // over the byte cap: delete a log even though space is fine
+  TEST_ASSERT_EQUAL(static_cast<int>(janitor::Action::DeleteOldestLog),
+                    static_cast<int>(janitor::decide(f, lim, cleaning)));
+
+  // Reboot loop: many tiny files, one per boot. Kept up to the file cap.
+  f.rotatedLogFiles = 0;
+  f.logFiles = 1000;
+  TEST_ASSERT_EQUAL(static_cast<int>(janitor::Action::None), static_cast<int>(janitor::decide(f, lim, cleaning)));
+  f.logFiles = 1001;
   TEST_ASSERT_EQUAL(static_cast<int>(janitor::Action::DeleteOldestLog),
                     static_cast<int>(janitor::decide(f, lim, cleaning)));
 
@@ -238,9 +249,10 @@ void test_janitor_logs_first_and_log_cap() {
   TEST_ASSERT_EQUAL(static_cast<int>(janitor::Action::DeleteOldestLog),
                     static_cast<int>(janitor::decide(f, lim, cleaning)));
 
-  TEST_ASSERT_EQUAL_UINT32(100, janitor::maxLogFilesFor(4000ull * 1024 * 1024, 1024 * 1024));  // 100 MB cap
-  TEST_ASSERT_EQUAL_UINT32(51, janitor::maxLogFilesFor(512ull * 1024 * 1024, 1024 * 1024));    // 10 %
-  TEST_ASSERT_EQUAL_UINT32(4, janitor::maxLogFilesFor(8ull * 1024 * 1024, 1024 * 1024));       // minimum
+  const uint64_t mb = 1024ull * 1024;
+  TEST_ASSERT_EQUAL_UINT64(100 * mb, janitor::maxLogBytesFor(4000 * mb, 1024 * 1024));  // 100 MB cap
+  TEST_ASSERT_EQUAL_UINT64(512 * mb / 10, janitor::maxLogBytesFor(512 * mb, 1024 * 1024));  // 10 %
+  TEST_ASSERT_EQUAL_UINT64(4 * mb, janitor::maxLogBytesFor(8 * mb, 1024 * 1024));  // minimum
 }
 
 void test_janitor_90_percent_is_a_hard_limit_retention_only_below() {
@@ -531,6 +543,24 @@ void test_janitor_never_deletes_current_files_and_reports_full() {
   TEST_ASSERT_EQUAL(static_cast<int>(ComponentStatus::Error), static_cast<int>(health.overall()));
 }
 
+void test_janitor_keeps_tiny_logs_of_a_reboot_loop() {
+  FakeFs fs;
+  fs.capacity = 4000ull * 1024 * 1024;
+  // 350 boots that each left a ~1 KB log (the old count cap kept only 100).
+  for (uint32_t b = 1; b <= 350; ++b) {
+    char path[40];
+    storagefmt::filePath("/logs", b, 1, "log", path, sizeof(path));
+    fs.add(path, 1000);
+  }
+  Clock clock(fakeUptimeMs);
+  HealthRegistry health(fakeUptimeS);
+  SdStore sd(fs, clock, health);
+  sd.begin(testOptions(), 0);
+  advance(sd, 30000);
+  TEST_ASSERT_TRUE(fs.fileSize("/logs/B000001-0001.log") > 0);  // nothing deleted
+  TEST_ASSERT_EQUAL_UINT32(0, sd.status().filesDeleted);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_iso_time);
@@ -552,5 +582,6 @@ int main() {
   RUN_TEST(test_log_tail_comes_from_the_card);
   RUN_TEST(test_janitor_frees_space_oldest_first);
   RUN_TEST(test_janitor_never_deletes_current_files_and_reports_full);
+  RUN_TEST(test_janitor_keeps_tiny_logs_of_a_reboot_loop);
   return UNITY_END();
 }

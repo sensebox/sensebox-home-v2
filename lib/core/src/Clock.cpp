@@ -11,12 +11,15 @@ bool Clock::setUtc(uint64_t utcMs, uint64_t atUptimeMs, TimeSource source) {
   utcAtBootMs_ = static_cast<int64_t>(utcMs) - static_cast<int64_t>(atUptimeMs);
   source_ = source;
   lastSyncUptimeMs_ = uptimeMs_();
+  ++syncCount_;
   return true;
 }
 
-uint32_t Clock::nowUtc() const {
+uint32_t Clock::nowUtc() const { return static_cast<uint32_t>(nowUtcMs() / 1000); }
+
+uint64_t Clock::nowUtcMs() const {
   if (!isSynced()) return 0;
-  return static_cast<uint32_t>((utcAtBootMs_ + static_cast<int64_t>(uptimeMs_())) / 1000);
+  return static_cast<uint64_t>(utcAtBootMs_ + static_cast<int64_t>(uptimeMs_()));
 }
 
 uint32_t Clock::timestampNow(uint16_t& quality) const {

@@ -31,6 +31,8 @@ The plan sorts the work into an **Olpe MVP** (everything in phases 0–7) and **
 | Temp/humidity sensor | **AM2315C** ([Adafruit 5182](https://www.adafruit.com/product/5182), AHT20 inside), replacing the SHT45 | AHT20 driver in the Olpe release; SHT4x and HDC1080 drivers move to phase 8 (§6, "AM2315C") |
 | Power | **mains** | no deep sleep, continuous SPS30 operation, the system clock runs continuously between syncs |
 | Intervals | **measure every 60 s, upload every 10 min** | defaults in the config |
+| Time grid | **measurements and windows on the UTC clock** (decision 2026-10-16) | once synced: measurements every full minute, windows end XX:00, XX:10, …; per-box send delay 0–120 s from the DevEUI against gateway collisions |
+| Olpe frame format | **`lorawan-compact`** (decision 2026-10-16) | port 2, fixed layout: window end (uint32 Unix s) + values in `channels` order, no channel/type bytes, 15 B instead of 23 B Cayenne. Needs the custom TTN formatter `tools/ttn-uplink-formatter.js`, which emits Cayenne-style field names so the OSeM `cayenne-lpp` profile keeps working (with gateway time; accepted for now). `lorawan-cayenne` stays for other stations |
 | LoRaWAN keys | **provided by reedu** in production | written by `tools/provision.py`, stored as secrets separate from the config (§5.1) |
 | eFuses | **none**: no Secure Boot, no flash encryption | OTA signatures checked by the application only (§4.9) |
 | External RTC | **none** | time from LoRaWAN `DeviceTimeReq` (§6.1) |
@@ -62,7 +64,8 @@ Done (builds for the MCU S2; 46 native unit tests pass; **not yet run on hardwar
 
 - Phase 6, OTA (2026-10-15; not yet run on hardware): upload in service mode (web UI, `POST /api/ota`), streamed into the other app slot; checks: ESP32-S2 image, image marker (this firmware), hardware revision, image hash; self-test (2 min normal operation + config accepted) with automatic rollback (`lib/ota`, `lib/updater`, §4.9). Not done (decision 2026-10-15): signatures, anti-downgrade.
 
-- Main loop at 10 Hz (100 ms, fixed rate) instead of ~100 Hz (decision 2026-10-15). Time-critical LoRaWAN timing stays in the LMIC task; the serial console reads all waiting input per pass; in service mode each HTTP request may wait up to 100 ms before it is handled.
+- Main loop (decision 2026-10-16, replaces "10 Hz" of 2026-10-15, which the code never had: it waited 10 ms per pass): **1 s, fixed rate** in normal and safe mode, 50 ms while BOOT is held or console input waits (button feedback, pasted configs); **100 ms** in service mode, where each HTTP request and DNS query waits for the next pass. Time-critical LoRaWAN timing stays in the LMIC task. The slower loop does not save RAM and hardly any power (the CPU idles in `vTaskDelay` either way); it just does less needless work.
+
 
 Not done yet: phase 7, `tools/` scripts, on-device tests.
 
@@ -281,7 +284,7 @@ class IRecordStore {                    // append-only log of Measurement record
 | Area | Path | Own cap |
 |---|---|---|
 | Measurements | `/data/B<boot>-<part>.csv` | none; it may use the space the logs leave |
-| Logs | `/logs/B<boot>-<part>.log` | 10 % of the card, max. 100 MB (counted in 1 MB files; oldest deleted first) |
+| Logs | `/logs/B<boot>-<part>.log` | rotated (full, 1 MB) files: 10 % of the card, max. 100 MB; and max. 1000 files, so a reboot loop with one tiny file per boot keeps its history (oldest deleted first) |
 
 **Implemented janitor (`lib/storage/src/Janitor.h`):**
 - **Watermarks:** below `lowWatermarkPct` free (default 10 %) it deletes until `highWatermarkPct` (20 %) is free: logs first, then measurement files, oldest first by name.
@@ -403,7 +406,7 @@ Also new compared to home v1: the MCU S2 has a radio **reset** pin (38) and a po
 - **Status snapshot:** right before the restart, normal operation writes a snapshot to RTC memory (`StatusSnapshot`, 3.5 KB, survives the software restart, checksummed): overall health, every component, every sensor (state, readings, errors), the latest value per sensor/phenomenon, LoRaWAN (joined, uplinks, RSSI/SNR, airtime budget) and the last 12 log lines. Service mode shows it as "Status before service mode". After a normal start it is invalidated.
 - **Entering:** **BOOT button (GPIO0)** held ≥ 3 s while the firmware runs (normal or safe mode). The LED turns purple; the snapshot is taken and the box restarts **when the button is released**, because restarting while GPIO0 is still held could start the ROM download mode. The request is one-shot (RTC memory), so the following boot is service mode and every later boot is normal.
   - ⚠️ GPIO0 is a strapping pin: if it is held **while the board powers up or resets**, the ESP32-S2 enters the ROM download (flashing) mode instead of starting the firmware. The user guide must say "press *after* the box has started". Firmware reads it with the internal pull-up and debounces in software; it must never be driven as an output.
-- **Leaving (decision 2026-10-14):** any restart: the "Restart into normal mode" button in the web UI, `reboot` on the console, a power cycle, or the inactivity timeout. The BOOT button does nothing in service mode.
+- **Leaving (decision 2026-10-14, extended 2026-10-16):** any restart: the "Restart into normal mode" button in the web UI, `reboot` on the console, a power cycle, the inactivity timeout, or **no device connected for `service.idleExitSec`** (default 60 s; counted only after the first device joined). The BOOT button does nothing in service mode.
 - **Access point:** `senseBox-<serial>` (or `senseBox-<last 3 MAC bytes>` without device identity), WPA2, max. 2 clients. The password defaults to `123sensebox` (decision 2026-10-14); a different one can be set with the console command `service-password` (stored as a secret in NVS, never shown in the web UI or the log). The default is not written to NVS, so a later firmware can change it for every box without its own password. The AP is **time-limited**: it closes (restart into normal mode) after `service.apTimeoutMin` (default 15) minutes without activity. Activity = a device joining the AP, page loads, user actions in the web UI (save, reload, upload, …) and console input; a phone that just stays connected, the UI's 30 s status poll and the OS's captive-portal probes do not count (decision 2026-10-15: otherwise a phone left on the AP or a forgotten tab kept service mode open forever). A captive DNS (polled in the main loop, no extra task) makes phones open the UI; it is also at `http://192.168.4.1/`. No mDNS (`sensebox.local`): it costs ~6 KB of internal RAM.
 - **UI (offline, embedded, no CDNs/external fonts):** one page, `web/index.html` (plain HTML/CSS/JS), embedded into the firmware at build time. Layout (2026-10-15), top to bottom: service-mode card (timeout, restart button); expandable **Status** (saved snapshot: overview, sensors, last measured values, LoRaWAN, components); expandable **Logs** (most recent logs from the snapshot, downloadable as text; log files on the SD card); expandable **Settings** (name, DevEUI, JoinEUI, AppKey write-only; full config as JSON); **Firmware update**. Expandable cards are native `<details>` elements. No live log of service mode (decision 2026-10-15: not needed; still on the serial console).
 - **REST API:**
@@ -413,7 +416,8 @@ Also new compared to home v1: the MCU S2 has a radio **reset** pin (38) and a po
   - `POST /api/config/field` `{"field":"name"|"uplinks.devEui"|"uplinks.joinEui","value":"…"}`; `POST /api/appkey` `{"appKey":"…"}`
   - `POST /api/reboot`
   - Later: OTA upload (phase 6), diagnostic report, sensor check, browser time → clock
-- **SD log files (2026-10-15):** the web UI lists the newest 40 log files on the card and downloads them (`GET /api/sdlogs`, `GET /api/sdlogs/file?name=…`). The card is mounted only for the duration of such a request and unmounted afterwards (~5–9 KB heap; refused below 16 KB free), so service mode otherwise keeps its RAM for WiFi. The saved log before service mode can be downloaded as a text file (in the browser, no firmware cost). Not tested on hardware yet: heap during a download with a client connected.
+- **SD log files (2026-10-15):** the web UI lists the log files on the card in pages of 40, newest first ("Load older files", `?before=<name>`; one pass over the directory per page, fixed RAM), with day and hour of the last write where the box had a time, and downloads them (`GET /api/sdlogs`, `GET /api/sdlogs/file?name=…`). The card is mounted only for the duration of such a request and unmounted afterwards (~5–9 KB heap; refused below 16 KB free), so service mode otherwise keeps its RAM for WiFi. The saved log before service mode can be downloaded as a text file (in the browser, no firmware cost). Not tested on hardware yet: heap during a download with a client connected.
+- **Wake AP removed (2026-10-20):** a bare AP in normal mode to enter service mode without opening the case was tried (2026-10-16) and removed: on hardware WiFi took ~62 KB of the ~81 KB free in normal operation (19.7 KB left, largest block 11 KB), almost all fixed driver/lwIP/task cost. Options for later: free static RAM (unused TinyUSB classes, esp_timer stack; needs a custom sdkconfig) or a LoRaWAN downlink command.
 - **Not implemented yet:** starting service mode by itself when the box is unconfigured or in safe mode; an on-demand sensor check (read each configured sensor once); the diagnostic report download.
 - **USB mass-storage mode** for editing files on the SD card (idea from requirements.md): the ESP32-S2 has native USB, so this is technically possible via TinyUSB MSC. It's deferred: it conflicts with the firmware's own SD access, and the REST/UI path covers the use case.
 
@@ -472,7 +476,7 @@ Also new compared to home v1: the MCU S2 has a radio **reset** pin (38) and a po
         { "ch": 6, "slot": 1, "phenomenon": "pm4",               "lpp": "analog_in" }
       ] }
   ],
-  "service": { "apTimeoutMin": 15 },
+  "service": { "apTimeoutMin": 15, "idleExitSec": 60 },
   "deployment": { "lat": 51.03, "lon": 7.85, "heightAboveGround": 2.5, "shield": "senseBox Shield V2" }
 }
 ```
@@ -521,7 +525,7 @@ Cayenne LPP frame: `[channel][type][data]` per value.
 | 6 | PM4 | Analog Input `0x02` | 4 B | same |
 | (later) | station status bitmask | Digital Input `0x00` / Analog | 3–4 B | sensor error bits, SD present, time synced |
 
-Full frame: **23 B** (all four PM values, decision). A sensor in `ERROR` **omits** its channels. ⚠️ The OSeM integration currently turns a missing channel into the value **0** (see "Findings" below); fixing that is part of phase 4.
+Full frame: **23 B** (all four PM values, decision). The Olpe boxes use the compact format instead (**15 B** incl. timestamp, see the decision table): 10 min fits up to SF8 with more headroom; SF9 would need ≤ 12 B, so even dropping PM1/PM4 isn't worth it, they stay. A sensor in `ERROR` **omits** its channels. ⚠️ The OSeM integration currently turns a missing channel into the value **0** (see "Findings" below); fixing that is part of phase 4.
 
 ### Airtime / TTN fair use, which drives the default interval
 TTN Fair Use allows about **30 s of airtime per device per day**. A 23 B payload (36 B PHY) takes roughly:
@@ -768,6 +772,7 @@ Every phase ends with something running on real hardware. Phases 0–7 make up t
 - [x] REST API (status, config, secrets write-only, logs, reboot)
 - [x] Web UI (status before service mode, settings, config JSON, logs), embedded at build time
 - [ ] Test on hardware: free heap with AP up and two clients, captive portal on Android/iOS
+- [x] No-client exit, service password in the web UI, 1 s main loop (2026-10-16)
 - [ ] Auto-start when unconfigured / in safe mode, sensor check, diagnostic report, browser time → Clock, firmware page (with phase 6)
 - **Exit:** a non-developer can set up LoRa keys and diagnose a pulled sensor from a phone, without a laptop.
 

@@ -6,6 +6,7 @@
 #include "Measurement.h"
 #include "RingBuffer.h"
 #include "Scheduling.h"
+#include "NoClientExit.h"
 
 namespace {
 uint64_t g_fakeUptimeMs = 0;
@@ -65,6 +66,19 @@ void test_backoff_doubles_and_caps() {
   TEST_ASSERT_EQUAL_UINT32(600000, backoffMs(10000, 600000, 255));
 }
 
+void test_utc_grid_helpers() {
+  TEST_ASSERT_TRUE(alignsToDay(60));
+  TEST_ASSERT_TRUE(alignsToDay(600));
+  TEST_ASSERT_TRUE(alignsToDay(1200));
+  TEST_ASSERT_FALSE(alignsToDay(0));
+  TEST_ASSERT_FALSE(alignsToDay(700));
+  // 1760000400 is a multiple of 600 (an XX:X0:00 time)
+  TEST_ASSERT_EQUAL_UINT32(600000, msToNextMultiple(1760000400000ull, 600000));
+  TEST_ASSERT_EQUAL_UINT32(1, msToNextMultiple(1760000400000ull - 1, 600000));
+  TEST_ASSERT_EQUAL_UINT32(420000, msToNextMultiple(1760000400000ull + 180000, 600000));
+  TEST_ASSERT_EQUAL_UINT32(36600, msToNextMultiple(1760000400000ull + 23400, 60000));
+}
+
 // --- Clock -------------------------------------------------------------------
 
 void test_clock_unsynced_uses_uptime_and_flags() {
@@ -85,6 +99,8 @@ void test_clock_sync_and_backdate() {
   TEST_ASSERT_TRUE(clock.setUtc(utcMs, 600000, TimeSource::LoRaWan));
   TEST_ASSERT_TRUE(clock.isSynced());
   TEST_ASSERT_EQUAL_UINT32(1760000000u, clock.nowUtc());
+  TEST_ASSERT_TRUE(clock.nowUtcMs() == utcMs);
+  TEST_ASSERT_EQUAL_UINT32(1, clock.syncCount());
 
   g_fakeUptimeMs = 660000;
   uint16_t q = 0;
@@ -156,16 +172,37 @@ void test_logger_ring_levels_and_sinks() {
   logger::removeSink(&sink);
 }
 
+// --- service-mode exit -------------------------------------------------------
+
+void test_no_client_exit_waits_for_first_client() {
+  NoClientExit e;
+  e.begin(0, 60000);
+  TEST_ASSERT_FALSE(e.update(0, 10u * 60000u));  // nobody joined yet: only apTimeoutMin applies
+  TEST_ASSERT_EQUAL(0, e.secondsLeft(0, 10u * 60000u));
+  TEST_ASSERT_FALSE(e.update(2, 10u * 60000u));
+  TEST_ASSERT_EQUAL(0, e.secondsLeft(2, 10u * 60000u));
+  TEST_ASSERT_FALSE(e.update(0, 11u * 60000u - 1));
+  TEST_ASSERT_EQUAL(1, e.secondsLeft(0, 11u * 60000u - 1));
+  TEST_ASSERT_TRUE(e.update(0, 11u * 60000u));
+
+  NoClientExit off;
+  off.begin(0, 0);
+  TEST_ASSERT_FALSE(off.update(1, 0));
+  TEST_ASSERT_FALSE(off.update(0, 0xFFFFFFFFu));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_phenomenon_names_roundtrip);
   RUN_TEST(test_ringbuffer_overwrites_oldest);
   RUN_TEST(test_time_reached_handles_wraparound);
   RUN_TEST(test_backoff_doubles_and_caps);
+  RUN_TEST(test_utc_grid_helpers);
   RUN_TEST(test_clock_unsynced_uses_uptime_and_flags);
   RUN_TEST(test_clock_sync_and_backdate);
   RUN_TEST(test_clock_rejects_implausible_and_late_browser_time);
   RUN_TEST(test_gps_to_unix);
   RUN_TEST(test_logger_ring_levels_and_sinks);
+  RUN_TEST(test_no_client_exit_waits_for_first_client);
   return UNITY_END();
 }

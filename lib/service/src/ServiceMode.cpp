@@ -20,6 +20,7 @@
 #include "SystemInfo.h"
 #include "Updater.h"
 #include "Version.h"
+#include "NoClientExit.h"
 #include "WebUi.h"
 
 namespace {
@@ -45,6 +46,7 @@ struct Context {
   char ssid[33] = {};
   uint32_t lastActivityMs = 0;
   uint8_t lastClients = 0;  // to notice a newly connected device
+  NoClientExit noClientExit;
   uint32_t rebootAtMs = 0;
   bool rebootPending = false;
   updater::ImageUpload* upload = nullptr;  // only while a firmware upload runs
@@ -118,10 +120,13 @@ void handleStatus() {
   ServiceMode mode;
   int n = snprintf(g.response, kResponseSize,
                    "{\"mode\":\"service\",\"firmware\":\"%s\",\"service\":{\"ssid\":\"%s\",\"clients\":%u,"
-                   "\"uptimeS\":%lu,\"secondsLeft\":%lu,\"apTimeoutMin\":%u,\"freeHeap\":%lu,\"minFreeHeap\":%lu},"
+                   "\"uptimeS\":%lu,\"secondsLeft\":%lu,\"apTimeoutMin\":%u,\"noClientExitS\":%lu,"
+                   "\"defaultPassword\":%s,\"freeHeap\":%lu,\"minFreeHeap\":%lu},"
                    "\"slot\":\"%s\",\"lastUpdateRolledBack\":%s,\"snapshot\":",
                    SBH_FW_VERSION, g.ssid, mode.clients(), static_cast<unsigned long>(sysinfo::uptimeMs() / 1000),
                    static_cast<unsigned long>(mode.secondsLeft(now)), g.options.apTimeoutMin,
+                   static_cast<unsigned long>(g.noClientExit.secondsLeft(mode.clients(), now)),
+                   servicepw::isSet() ? "false" : "true",
                    static_cast<unsigned long>(sysinfo::freeHeap()), static_cast<unsigned long>(sysinfo::minFreeHeap()),
                    g.running.partition, g.running.previousRolledBack ? "true" : "false");
   size_t len = static_cast<size_t>(n);
@@ -226,6 +231,17 @@ void handlePostAppKey() {
   sendResult(ok, err);
 }
 
+void handlePostServicePassword() {
+  auto buf = beginRequest();
+  if (outOfMemory(buf)) return;
+  JsonDocument doc;
+  if (!readBody(doc)) return;
+  char err[cfgedit::kErrLen];
+  const bool ok = servicepw::set(doc["password"] | "", err, sizeof(err));
+  if (ok) LOGI(kTag, "service-mode password changed from the web UI");
+  sendResult(ok, err);
+}
+
 void handleReboot() {
   auto buf = beginRequest();
   if (outOfMemory(buf)) return;
@@ -274,11 +290,14 @@ struct LogEntry {
   char name[24];
 };
 
-// Keeps the newest kMaxListedLogs log files (by boot number and part).
+// Keeps the newest kMaxListedLogs log files (by boot number and part) older than `before`: one
+// page of the list. The next page starts before the oldest file of this one.
 struct LogScan {
   LogEntry items[kMaxListedLogs];
   size_t count = 0;
   uint32_t total = 0;
+  uint32_t older = 0;  // files older than `before`, this page included
+  uint64_t before = UINT64_MAX;
 };
 
 void onLogFile(const char* name, void* p) {
@@ -292,6 +311,8 @@ void onLogFile(const char* name, void* p) {
   }
   ++s.total;
   const uint64_t key = storagefmt::fileKey(boot, part);
+  if (key >= s.before) return;
+  ++s.older;
   size_t slot = s.count;
   if (s.count == kMaxListedLogs) {  // full: replace the oldest kept entry if this one is newer
     slot = 0;
@@ -314,6 +335,15 @@ void handleSdLogList() {
     sendSmallError("out of memory");
     return;
   }
+  if (g.server->hasArg("before")) {
+    uint32_t boot;
+    uint16_t part;
+    if (!storagefmt::parseFileName(g.server->arg("before").c_str(), boot, part)) {
+      sendSmallError("invalid file name");
+      return;
+    }
+    scan->before = storagefmt::fileKey(boot, part);
+  }
   SdSession sd;
   if (!sd.ok()) {
     sendSmallError(sysinfo::freeHeap() < kMinHeapForSd ? "not enough memory to read the SD card right now"
@@ -332,6 +362,7 @@ void handleSdLogList() {
   JsonDocument doc;
   doc["ok"] = true;
   doc["total"] = scan->total;
+  doc["more"] = scan->older > scan->count;  // older files left for the next page
   uint64_t totalBytes = 0;
   uint64_t freeBytes = 0;
   if (sd.fs().space(totalBytes, freeBytes)) {
@@ -346,6 +377,8 @@ void handleSdLogList() {
     JsonObject f = files.add<JsonObject>();
     f["name"] = scan->items[i].name;
     f["size"] = sd.fs().fileSize(path);
+    // Last write (UTC), 0 if the box had no time then (no time sync in that boot).
+    f["mtime"] = sd.fs().fileMtime(path);
   }
   scan.reset();
   auto buf = sysinfo::makeTempBuffer(measureJson(doc) + 1);
@@ -503,22 +536,22 @@ void handleNotFound() {
   g.server->send(302, "text/plain", "");
 }
 
-void buildSsid(const char* serial) {
+}  // namespace
+
+void serviceApSsid(char* out, size_t cap, const char* serial) {
   if (serial != nullptr && serial[0] != '\0') {
-    snprintf(g.ssid, sizeof(g.ssid), "senseBox-%.20s", serial);
+    snprintf(out, cap, "senseBox-%.20s", serial);
     return;
   }
   uint8_t mac[6] = {};
   esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-  snprintf(g.ssid, sizeof(g.ssid), "senseBox-%02X%02X%02X", mac[3], mac[4], mac[5]);
+  snprintf(out, cap, "senseBox-%02X%02X%02X", mac[3], mac[4], mac[5]);
 }
-
-}  // namespace
 
 bool ServiceMode::begin(const Options& options) {
   g.options = options;
   g.running = updater::bootInfo();
-  buildSsid(options.deviceSerial);
+  serviceApSsid(g.ssid, sizeof(g.ssid), options.deviceSerial);
 
   char password[servicepw::kMaxLen + 1];
   bool isDefault = false;
@@ -548,6 +581,7 @@ bool ServiceMode::begin(const Options& options) {
   g.server->on("/api/config", HTTP_POST, handlePostConfig);
   g.server->on("/api/config/field", HTTP_POST, handlePostField);
   g.server->on("/api/appkey", HTTP_POST, handlePostAppKey);
+  g.server->on("/api/service-password", HTTP_POST, handlePostServicePassword);
   g.server->on("/api/reboot", HTTP_POST, handleReboot);
   g.server->on("/api/ota", HTTP_POST, handleOtaDone, handleOtaChunk);
   g.server->on("/api/sdlogs", HTTP_GET, handleSdLogList);
@@ -556,8 +590,12 @@ bool ServiceMode::begin(const Options& options) {
   g.server->begin();
 
   g.lastActivityMs = millis();
+  g.noClientExit.begin(g.lastActivityMs, static_cast<uint32_t>(options.idleExitSec) * 1000u);
   LOGI(kTag, "access point \"%s\" up at %s, closes after %u min without activity", g.ssid,
        WiFi.softAPIP().toString().c_str(), g.options.apTimeoutMin);
+  if (options.idleExitSec > 0) {
+    LOGI(kTag, "also closes %u s after the last device left", options.idleExitSec);
+  }
   const uint32_t freeHeap = sysinfo::freeHeap();
   LOGI(kTag, "internal heap free %lu, largest block %lu", static_cast<unsigned long>(freeHeap),
        static_cast<unsigned long>(sysinfo::largestFreeBlock()));
@@ -597,13 +635,18 @@ void ServiceMode::loop(uint32_t nowMs) {
   const uint8_t n = clients();
   if (n > g.lastClients) g.lastActivityMs = nowMs;
   g.lastClients = n;
+  const bool nobodyLeft = g.noClientExit.update(n, nowMs);
 
   if (g.rebootPending && static_cast<int32_t>(nowMs - g.rebootAtMs) >= 0) {
     Serial.flush();
     ESP.restart();
   }
-  if (secondsLeft(nowMs) == 0) {
-    LOGI(kTag, "no activity for %u min, restarting into normal mode", g.options.apTimeoutMin);
+  if (secondsLeft(nowMs) == 0 || nobodyLeft) {
+    if (nobodyLeft) {
+      LOGI(kTag, "no device connected for %u s, restarting into normal mode", g.options.idleExitSec);
+    } else {
+      LOGI(kTag, "no activity for %u min, restarting into normal mode", g.options.apTimeoutMin);
+    }
     Serial.flush();
     delay(100);
     ESP.restart();
