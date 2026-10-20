@@ -14,7 +14,10 @@ class SerialConsole {
   // Serial receive buffer: larger than one console line, so a pasted config fits completely.
   static constexpr size_t kRxBufferSize = 2048;
 
-  explicit SerialConsole(App& app) : app_(app) {}
+  // Saves the status and restarts into service mode; does not return.
+  using EnterServiceMode = void (*)(uint32_t nowMs);
+
+  SerialConsole(App& app, EnterServiceMode enterServiceMode) : app_(app), enterServiceMode_(enterServiceMode) {}
   // Registers for receive-overflow notifications. Call after Serial.begin().
   void begin();
   // Non-blocking: reads what is available and runs complete lines.
@@ -28,6 +31,7 @@ class SerialConsole {
   void printLog(uint32_t nowMs);
 
   App& app_;
+  EnterServiceMode enterServiceMode_;
   static constexpr size_t kLineLen = 2048;  // a complete config is ~1 KB
   char line_[kLineLen] = {};
   size_t len_ = 0;

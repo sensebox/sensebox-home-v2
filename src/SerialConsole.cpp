@@ -99,8 +99,9 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     Serial.println("  appkey <32 hex>                    store the LoRaWAN AppKey (MSB first); never printed");
     Serial.println("  service-password <password>        WiFi password of service mode (8-63 characters)");
     Serial.println("  log                                print the end of the log (from the SD card)");
+    Serial.println("  service                            restart into service mode (WiFi access point and web page)");
     Serial.println("  reboot                             restart into normal mode (also leaves safe/service mode)");
-    Serial.println("config-set and appkey apply after 'reboot'. Service mode: hold BOOT for 3 s, then release.");
+    Serial.println("config-set and appkey apply after 'reboot'. Service mode also: hold BOOT for 3 s, then release.");
   } else if (strcmp(line, "status") == 0) {
     printStatus(nowMs);
   } else if (strcmp(line, "config") == 0) {
@@ -115,6 +116,17 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
     if (ok) LOGI("console", "service-mode password changed");
   } else if (strcmp(line, "log") == 0) {
     printLog(nowMs);
+  } else if (strcmp(line, "service") == 0) {
+    if (app_.serviceMode) {
+      Serial.println("already in service mode");
+    } else if (app_.selfTest.running()) {
+      // Same rule as the BOOT button: a restart now would roll the fresh update back.
+      Serial.printf("error: the new firmware is being checked, service mode available in %lu s\n",
+                    static_cast<unsigned long>(app_.selfTest.secondsLeft(nowMs)));
+    } else {
+      Serial.println("restarting into service mode");
+      enterServiceMode_(nowMs);
+    }
   } else if (strcmp(line, "reboot") == 0) {
     // A requested reboot is a normal start: it never counts as a crash, ends safe mode, and
     // (the service-mode request being one-shot) also ends service mode.

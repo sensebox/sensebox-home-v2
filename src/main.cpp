@@ -93,7 +93,8 @@ StatusLed g_led;
 ButtonDetector g_button;
 BootGuard g_bootGuard;
 App g_app{g_clock, g_health, g_config, g_sensors, g_lora, g_sd, g_selfTest, false, false};
-SerialConsole g_console(g_app);
+void enterServiceMode(uint32_t nowMs);
+SerialConsole g_console(g_app, enterServiceMode);
 ServiceMode g_service;
 
 HealthRegistry::Id g_configHealth = HealthRegistry::kInvalid;
