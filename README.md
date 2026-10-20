@@ -94,9 +94,9 @@ Notes:
 | LED | Meaning |
 |---|---|
 | 🔵 - blue | starting |
-| 🟢 - short green flash every 5 s | everything OK |
-| 🟠 - orange flash every 2 s | degraded: something needs attention (e.g. not joined yet, a window without valid values) |
-| 🔴 - red flash every second | error: a component failed (e.g. a sensor) |
+| 🟢 - green | everything OK |
+| 🟠 - orange | degraded: something needs attention (e.g. not joined yet, a window without valid values) |
+| 🔴 - red | error: a component failed (e.g. a sensor) |
 | 🟣 - purple | [service mode](#service-mode): BOOT held ≥ 3 s (the box restarts when you release it), and while service mode runs |
 | 🔴🟣 - alternating red/purple | If the box crashes (panic, watchdog, brownout) more than 5 times in a row without running normally for 10 minutes, it starts in **safe mode**. Sensors and LoRaWAN stay off and only the console runs, so a broken config can't keep the box in a reboot loop. Service mode can be started from safe mode with the BOOT button. |
 
