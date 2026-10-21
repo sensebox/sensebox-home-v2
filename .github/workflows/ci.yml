@@ -1,0 +1,128 @@
+# Tests and builds every PR and push to main. Pushes to main also update the rolling "latest"
+# pre-release and the config generator on GitHub Pages; tags v* create a release.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio/libdeps
+          key: pio-native-${{ hashFiles('platformio.ini') }}
+      - run: pip install platformio==6.2.0
+      - run: pio test -e native
+
+  formatter:
+    name: JS tests (TTN formatters, config generator templates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test 'tools/test/*.test.mjs'
+
+  build:
+    name: Firmware build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs the tags (scripts/version.py)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio/libdeps
+          key: pio-device-${{ hashFiles('platformio.ini') }}
+      - run: pip install platformio==6.2.0
+      - name: Build all device envs
+        run: pio run -e mcu_s2 -e mcu_s2_dev -e hwtest_wifi_ap
+      - name: Package
+        run: python scripts/package_firmware.py mcu_s2 dist >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: github.event_name == 'push'
+    needs: [test, formatter, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: dist
+      - name: Rolling "latest" pre-release
+        if: github.ref == 'refs/heads/main'
+        run: |
+          bin=$(ls dist/release/*.bin)
+          version=$(basename "$bin" .bin | sed 's/^sensebox-home-v2_//; s/_mcu_s2$//')
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/release/* \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "Latest build from main ($version)" \
+            --notes "Built automatically from main at ${GITHUB_SHA::7}. Not a tested release: use the newest v* release for stations in the field.
+
+          Install over the service-mode web page (Firmware update). Config generator: https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+      - name: Versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release create "$GITHUB_REF_NAME" dist/release/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+
+  pages:
+    name: Config generator
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, formatter, build]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble site
+        run: |
+          mkdir -p _site/formatters
+          cp site/* _site/
+          cp tools/ttn-uplink-formatter*.js _site/formatters/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4

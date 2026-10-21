@@ -1,8 +1,15 @@
 # senseBox:home v2 firmware
 
+[![CI](https://github.com/sensebox/sensebox-home-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/sensebox/sensebox-home-v2/actions/workflows/ci.yml)
+
 Firmware for the senseBox:home v2: an environmental measurement station based on the senseBox MCU S2 (ESP32-S2).
 
 There is **one firmware for all stations**. Which sensors are connected, how often they measure and where the data goes are set in a **configuration** stored on the box, not compiled into the firmware. Switching a sensor (e.g. HDC1080 → AM2315C) or a data target means changing the config, not flashing a different firmware.
+
+## Download and setup without building
+
+- **Config generator:** [sensebox.github.io/sensebox-home-v2](https://sensebox.github.io/sensebox-home-v2/). Creates the config from a template (sensors, LoRaWAN keys, channels) as ready-to-paste commands for the Arduino IDE serial monitor and generates the matching TTN payload formatter.
+- **Firmware files:** [Releases](https://github.com/sensebox/sensebox-home-v2/releases). `latest` is rebuilt from `main` on every push; versioned releases (`v…`) are the ones for stations in the field. `sensebox-home-v2_<version>_mcu_s2.bin` is the OTA image for the [firmware update](#firmware-update-ota) in service mode.
 
 ## Quickstart: HDC1080 only
 
@@ -511,7 +518,15 @@ PlatformIO environments:
 | `mcu_s2` | Release firmware. |
 | `mcu_s2_dev` | Debug logging; uses [config/olpe-template.json](config/olpe-template.json) when no config is stored. |
 | `native` | Unit tests on the PC: `pio test -e native` |
+| `hwtest_wifi_ap` | Hardware test: minimal WiFi access point ([hwtest/wifi_ap/main.cpp](hwtest/wifi_ap/main.cpp)). |
 
 Every device build ends with `scripts/check_image.py`, which fails the build if the OTA image marker or the rollback hook is missing from the image.
+
+**Firmware version:** `scripts/version.py` sets `SBH_FW_VERSION`. Local builds report `0.1.0-dev` unless you set it (`SBH_FW_VERSION=0.2.0 pio run -e mcu_s2`). CI builds use `git describe`: tag `v0.2.0` → `0.2.0`, later commits → `0.2.0-3-gabc1234`, before the first tag → `0.1.0-dev-gabc1234`.
+
+**CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on every pull request and push to `main`:
+- `pio test -e native`, the JS tests for the TTN formatters and the config generator templates (`node --test 'tools/test/*.test.mjs'`) and a build of all device envs.
+- On `main` it also replaces the `latest` pre-release and deploys the config generator ([site/](site/)) to GitHub Pages. `scripts/package_firmware.py` names the files.
+- To release, push a tag: `git tag v0.2.0 && git push origin v0.2.0`.
 
 Code layout and the rules for contributing are in [implementation-docs/CLAUDE.md](implementation-docs/CLAUDE.md).

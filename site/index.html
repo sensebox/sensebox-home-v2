@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>senseBox:home v2 config</title>
+<!-- Config generator, deployed to GitHub Pages by .github/workflows/ci.yml together with
+     formatters/ (tools/). The templates are built in (templates.js). -->
+<style>
+:root{--bg:#f5f6f7;--card:#fff;--fg:#1c2329;--mute:#5f6b75;--line:#dde2e6;--ok:#1d7d3f;--warn:#a45d00;--err:#b3261e;--acc:#00727a}
+@media(prefers-color-scheme:dark){:root{--bg:#121619;--card:#1c2227;--fg:#e6ebef;--mute:#9aa6b0;--line:#2e373e;--ok:#5cc77f;--warn:#e7a34a;--err:#f2827b;--acc:#4dc2c9}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:16px;border-bottom:1px solid var(--line);background:var(--card)}h1{font-size:18px;margin:0}
+.sub{color:var(--mute);font-size:13px}main{max-width:900px;margin:0 auto;padding:16px}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+h2{font-size:15px;margin:0 0 10px}h3{font-size:14px;margin:16px 0 6px}p{margin:6px 0}
+a{color:var(--acc)}ol{margin:6px 0;padding-left:22px}
+label{display:block;font-size:13px;color:var(--mute);margin:10px 0 3px}
+input,select,textarea{width:100%;padding:7px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:14px ui-monospace,Menlo,Consolas,monospace}
+input.bad{border-color:var(--err)}
+textarea{min-height:120px;resize:vertical}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0 16px}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--mute);font-weight:600;white-space:nowrap}td input,td select{padding:4px 6px}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+button{padding:7px 14px;border:1px solid var(--acc);border-radius:6px;background:var(--acc);color:#fff;font-size:14px;cursor:pointer}
+button.sec{background:transparent;color:var(--acc)}button.x{padding:2px 9px;background:transparent;color:var(--mute);border-color:var(--line)}
+button:disabled{opacity:.5;cursor:default}.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.msg{font-size:13px;margin-top:6px}.ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}
+ul.errs{margin:6px 0;padding-left:20px;color:var(--err);font-size:14px}
+pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+.cmd{margin-top:12px}.cmd .head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;font-size:14px;font-weight:600}
+.cmd pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;max-height:160px;overflow-y:auto}
+.cmd .sub{margin-top:3px}
+.note{border-left:4px solid var(--acc);padding-left:10px;color:var(--mute);font-size:14px}
+code{font:13px ui-monospace,Menlo,Consolas,monospace}
+@media(max-width:600px){main{padding:10px}section{padding:12px}table{font-size:13px}td,th{padding:3px}}
+</style>
+</head><body>
+<header><h1>senseBox:home v2 config generator</h1><div class="sub">Creates the box config as commands for the serial monitor.</div></header>
+<main>
+
+<section>
+<h2>1. Create the config</h2>
+<div class="grid">
+  <div><label for="preset">Template</label><select id="preset"></select></div>
+  <div><label for="name">Station name</label><input id="name" maxlength="31" placeholder="e.g. Olpe-017"></div>
+</div>
+<p class="msg sub">Pick the template that matches your sensors. It fills in the fields below, which you can then change.</p>
+
+<h3>Sensors</h3>
+<div class="tw"><table><thead><tr><th>Slot</th><th>Type</th><th>Interval (s)</th><th>Fan cleaning (days)</th><th></th></tr></thead>
+<tbody id="sensors"></tbody></table></div>
+<div class="row"><button class="sec" id="addSensor">Add sensor</button></div>
+
+<h3>Upload</h3>
+<div class="grid">
+  <div><label for="uplink">Type</label><select id="uplink">
+    <option value="none">none (measure and store on SD only)</option>
+    <option value="lorawan-compact">LoRaWAN compact (port 2)</option>
+    <option value="lorawan-cayenne">LoRaWAN Cayenne LPP</option>
+  </select></div>
+  <div class="lw"><label for="interval">Upload interval (s)</label><input id="interval" type="number" min="60" max="86400"></div>
+</div>
+<div class="lw">
+<div class="grid">
+  <div><label for="devEui">DevEUI (from TTN)</label><input id="devEui" maxlength="16" placeholder="16 hex digits"></div>
+  <div><label for="joinEui">JoinEUI / AppEUI</label><input id="joinEui" maxlength="16" placeholder="16 hex digits"></div>
+  <div><label for="appKey">AppKey</label><input id="appKey" maxlength="32" placeholder="32 hex digits" autocomplete="off"></div>
+</div>
+<p class="msg sub">The AppKey is not part of the config: it's sent with its own <code>appkey</code> command and never leaves this page otherwise.</p>
+<h3>Channels <span class="sub">(order = order in the frame)</span></h3>
+<div class="tw"><table><thead><tr><th>#</th><th>Sensor slot</th><th>Phenomenon</th><th class="cay">LPP ch</th><th class="cay">LPP type</th><th></th></tr></thead>
+<tbody id="channels"></tbody></table></div>
+<div class="row"><button class="sec" id="addChannel">Add channel</button><button class="sec" id="autoChannels">All values of all sensors</button></div>
+</div>
+<ul class="errs" id="errors"></ul>
+</section>
+
+<section id="out">
+<h2>2. Result</h2>
+<p>Send the config to the box with the serial monitor of the Arduino IDE:</p>
+<ol>
+<li>Connect the box over USB and open the <b>Arduino IDE</b>.</li>
+<li>Choose the board's port under <i>Tools → Port</i>, then open <i>Tools → Serial Monitor</i>.</li>
+<li>In the serial monitor, set <b>115200 baud</b> and the line ending <b>New Line</b>.</li>
+<li>Copy each command below, paste it into the input field of the serial monitor and press Enter. Wait for the answer before you send the next one.</li>
+</ol>
+<div id="cmds"></div>
+<div class="row"><button class="sec" id="download">Download config JSON</button></div>
+<div id="fmt"></div>
+</section>
+
+</main>
+<script src="templates.js"></script>
+<script src="app.js"></script>
+</body></html>
