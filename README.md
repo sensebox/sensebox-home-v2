@@ -263,7 +263,7 @@ All sections are optional; missing fields use the defaults below. Unknown fields
 | `enabled` | `true` | `false` keeps the sensor in the config but doesn't start it. |
 | `intervalSec` | `60` | Measurement interval in seconds, `1`–`86400`. Once the clock is synced, measurements run on the UTC clock (60 → every full minute) if the interval divides a day. |
 | `calibration` | none | Per phenomenon: `{ "<phenomenon>": { "gain": 1.0, "offset": 0.0 } }`. Produces an additional *corrected* value `raw × gain + offset`; the raw value is kept. If present, averages and uploads use the corrected value. Max. 4 entries. |
-| *other numbers* | | Driver-specific parameters, e.g. `fanCleaningIntervalDays` for the SPS30. Max. 4 per sensor. |
+| *other numbers* | | Driver-specific parameters, e.g. `fanCleaningIntervalDays` for the SPS30, and [quality check overrides](#quality-checks) like `rh.stuckCount`. Max. 8 per sensor. |
 
 **Sensor types:**
 
@@ -394,6 +394,22 @@ Every value carries a quality bitmask (`q=0x...` in the log). `0x000` means no r
 | 6 | `0x040` | time not synced: timestamp is seconds since boot, not UTC | no |
 | 7 | `0x080` | average built from fewer samples than expected | no |
 | 8 | `0x100` | value clamped to fit the transmission format | no |
+
+### Quality checks
+
+Bits 1–3 come from checks with default limits per phenomenon:
+
+| Phenomenon | Plausible range | Spike limit | Stuck after | Saturation (never "stuck") |
+|---|---|---|---|---|
+| `air_temperature` | −40 … 60 °C | 5 °C/min | 30 identical values | ≤ −40, ≥ 60 |
+| `relative_humidity` | 0 … 100 % | 20 %/min | 30 identical values | ≤ 0.5, ≥ 98 (rain, fog) |
+| `pm1`, `pm2_5`, `pm4`, `pm10` | 0 … 1000 µg/m³ | none | 30 identical values | ≤ 0.5 (clean air) |
+
+Each sensor can override them with parameters named `<prefix>.<field>`. Prefixes: `temp`, `rh`, `pm1`, `pm2_5`, `pm4`, `pm10`. Fields: `min`, `max`, `maxDelta` (per minute, `0` = no spike check), `stuckCount` (`0` = no stuck check), `saturatedBelow`, `saturatedAbove`.
+
+```json
+{ "slot": 0, "type": "hdc1080", "rh.saturatedAbove": 95, "temp.stuckCount": 60 }
+```
 
 ---
 

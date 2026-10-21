@@ -89,6 +89,50 @@ void test_quality_stuck_but_not_saturated() {
   TEST_ASSERT_FALSE(flags & quality::kStuck);
 }
 
+void test_quality_saturation_below_range_limit() {
+  QualityChecker qc;
+  uint16_t flags = 0;
+  // HDC1080 maximum (65535/65536 × 100): the sensor never reports exactly 100 %
+  for (int i = 0; i < 60; ++i) flags |= qc.check(make(0, Phenomenon::RelativeHumidity, 99.998f, 1000 + i * 60));
+  TEST_ASSERT_FALSE(flags & quality::kStuck);
+  for (int i = 0; i < 60; ++i) flags |= qc.check(make(1, Phenomenon::RelativeHumidity, 98.5f, 1000 + i * 60));
+  TEST_ASSERT_FALSE(flags & quality::kStuck);
+  // Mid-range is still detected
+  for (int i = 0; i < 30; ++i) flags = qc.check(make(2, Phenomenon::RelativeHumidity, 55.0f, 1000 + i * 60));
+  TEST_ASSERT_TRUE(flags & quality::kStuck);
+}
+
+void addParam(config::SensorConfig& s, const char* key, float value) {
+  strcpy(s.params[s.paramCount].key, key);
+  s.params[s.paramCount++].value = value;
+}
+
+void test_quality_per_sensor_overrides() {
+  config::SensorConfig& s = g_cfg.sensors[g_cfg.sensorCount++];
+  s.slot = 3;
+  strcpy(s.type, "hdc1080");
+  addParam(s, "rh.saturatedAbove", 95.0f);
+  addParam(s, "temp.stuckCount", 0.0f);
+  addParam(s, "temp.max", 45.0f);
+
+  const PlausibilityLimits rh = resolveLimits(Phenomenon::RelativeHumidity, &s);
+  TEST_ASSERT_EQUAL_FLOAT(95.0f, rh.saturatedAbove);
+  TEST_ASSERT_EQUAL_UINT8(30, rh.stuckCount);
+  // Other phenomena keep their defaults
+  TEST_ASSERT_EQUAL_FLOAT(defaultLimits(Phenomenon::PM10).max, resolveLimits(Phenomenon::PM10, &s).max);
+
+  QualityChecker qc(&g_cfg);
+  uint16_t flags = 0;
+  for (int i = 0; i < 60; ++i) flags |= qc.check(make(3, Phenomenon::RelativeHumidity, 96.0f, 1000 + i * 60));
+  TEST_ASSERT_FALSE(flags & quality::kStuck);
+  for (int i = 0; i < 60; ++i) flags |= qc.check(make(3, Phenomenon::AirTemperature, 12.34f, 1000 + i * 60));
+  TEST_ASSERT_FALSE(flags & quality::kStuck);
+  TEST_ASSERT_TRUE(qc.check(make(3, Phenomenon::AirTemperature, 50.0f, 1000 + 60 * 60)) & quality::kImplausible);
+  // A sensor without overrides uses the defaults
+  for (int i = 0; i < 30; ++i) flags = qc.check(make(0, Phenomenon::AirTemperature, 12.34f, 1000 + i * 60));
+  TEST_ASSERT_TRUE(flags & quality::kStuck);
+}
+
 // --- Pipeline -----------------------------------------------------------------
 
 void test_pipeline_flags_and_calibrates() {
@@ -233,6 +277,8 @@ int main() {
   RUN_TEST(test_quality_implausible);
   RUN_TEST(test_quality_spike_rate_per_minute);
   RUN_TEST(test_quality_stuck_but_not_saturated);
+  RUN_TEST(test_quality_saturation_below_range_limit);
+  RUN_TEST(test_quality_per_sensor_overrides);
   RUN_TEST(test_pipeline_flags_and_calibrates);
   RUN_TEST(test_aggregator_mean_excludes_flagged);
   RUN_TEST(test_aggregator_prefers_corrected_series);

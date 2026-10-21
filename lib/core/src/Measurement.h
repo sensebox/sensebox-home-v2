@@ -62,6 +62,7 @@ static_assert(sizeof(Measurement) <= 16, "Measurement must stay small: it is sto
 
 // Stable string names, used in config, REST API and CSV export. Never rename existing entries.
 const char* phenomenonName(Phenomenon p);
+const char* phenomenonShortName(Phenomenon p);
 bool phenomenonFromName(const char* name, Phenomenon& out);
 const char* unitSymbol(Unit u);
 Unit defaultUnit(Phenomenon p);

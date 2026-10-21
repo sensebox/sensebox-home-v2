@@ -15,7 +15,7 @@ namespace config {
 constexpr uint16_t kSchemaVersion = 1;
 
 constexpr size_t kMaxSensors = 8;
-constexpr size_t kMaxSensorParams = 4;
+constexpr size_t kMaxSensorParams = 8;
 constexpr size_t kMaxCalibrations = 4;
 constexpr size_t kMaxUplinks = 2;
 constexpr size_t kMaxLppChannels = 16;

@@ -14,7 +14,7 @@ class Pipeline : public MeasurementSink {
   static constexpr size_t kMaxSinks = 6;
 
   // `cfg` must outlive the pipeline (it is the global station config).
-  explicit Pipeline(const config::StationConfig& cfg) : cfg_(cfg) {}
+  explicit Pipeline(const config::StationConfig& cfg) : cfg_(cfg), checker_(&cfg) {}
 
   bool addSink(MeasurementSink* sink);
   void onMeasurement(const Measurement& raw) override;

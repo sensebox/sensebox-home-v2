@@ -7,16 +7,17 @@ namespace {
 struct PhenomenonInfo {
   Phenomenon phenomenon;
   const char* name;
+  const char* shortName;  // prefix of per-sensor quality overrides, e.g. "rh.stuckCount"
   Unit unit;
 };
 
 constexpr PhenomenonInfo kPhenomena[] = {
-    {Phenomenon::AirTemperature, "air_temperature", Unit::DegC},
-    {Phenomenon::RelativeHumidity, "relative_humidity", Unit::Percent},
-    {Phenomenon::PM1, "pm1", Unit::UgPerM3},
-    {Phenomenon::PM2_5, "pm2_5", Unit::UgPerM3},
-    {Phenomenon::PM4, "pm4", Unit::UgPerM3},
-    {Phenomenon::PM10, "pm10", Unit::UgPerM3},
+    {Phenomenon::AirTemperature, "air_temperature", "temp", Unit::DegC},
+    {Phenomenon::RelativeHumidity, "relative_humidity", "rh", Unit::Percent},
+    {Phenomenon::PM1, "pm1", "pm1", Unit::UgPerM3},
+    {Phenomenon::PM2_5, "pm2_5", "pm2_5", Unit::UgPerM3},
+    {Phenomenon::PM4, "pm4", "pm4", Unit::UgPerM3},
+    {Phenomenon::PM10, "pm10", "pm10", Unit::UgPerM3},
 };
 
 }  // namespace
@@ -24,6 +25,13 @@ constexpr PhenomenonInfo kPhenomena[] = {
 const char* phenomenonName(Phenomenon p) {
   for (const auto& info : kPhenomena) {
     if (info.phenomenon == p) return info.name;
+  }
+  return "unknown";
+}
+
+const char* phenomenonShortName(Phenomenon p) {
+  for (const auto& info : kPhenomena) {
+    if (info.phenomenon == p) return info.shortName;
   }
   return "unknown";
 }
