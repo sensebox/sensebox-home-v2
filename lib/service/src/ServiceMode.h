@@ -31,7 +31,9 @@
 //   GET  /api/sdlogs[?before=<name>]  log files on the SD card, newest first, 40 per page (name,
 //                           size, mtime), card size/free, `more`; next page: before=<oldest shown>
 //   GET  /api/sdlogs/file?name=B000042-0001.log   download one log file
-// The SD card is only mounted while one of the /api/sdlogs requests runs (RAM, see .cpp).
+//   GET  /api/sddata[?before=<name>]  measurement files (CSV) on the SD card, same as /api/sdlogs
+//   GET  /api/sddata/file?name=B000042-0001.csv   download one measurement file
+// The SD card is only mounted while one of the /api/sd* requests runs (RAM, see .cpp).
 
 class ServiceMode {
  public:

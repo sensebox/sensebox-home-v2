@@ -30,10 +30,10 @@ constexpr size_t kResponseSize = 6144;  // per request, freed afterwards
 constexpr uint8_t kMaxClients = 2;  // each WiFi station costs RAM
 constexpr uint32_t kRebootDelayMs = 500;
 constexpr uint32_t kLowHeapWarning = 30000;
-// The SD card isn't used in service mode, except while a log file request runs: mounting it
+// The SD card isn't used in service mode, except while a file request runs: mounting it
 // costs ~5-9 KB of heap (FAT structures, file buffer), which must not starve WiFi.
 constexpr uint32_t kMinHeapForSd = 16000;
-constexpr size_t kMaxListedLogs = 40;  // newest files only
+constexpr size_t kMaxListedFiles = 40;  // newest files only
 constexpr size_t kDownloadChunk = 1436;  // one TCP segment
 
 // Server objects live on the heap and are created in begin(): normal mode never pays for them.
@@ -262,7 +262,7 @@ void pauseDns(bool pause) {
   }
 }
 
-// --- log files on the SD card ---------------------------------------------------------
+// --- log and measurement files on the SD card ------------------------------------------
 
 // Error answer without the per-request response buffer: the SD handlers leave the heap to the
 // card (sendResult() needs beginRequest()'s buffer).
@@ -285,36 +285,49 @@ class SdSession {
   bool ok_;
 };
 
-struct LogEntry {
+// Which files a list/download request is about: logs (/logs/*.log) or measurements (/data/*.csv).
+struct SdKind {
+  const char* dir;
+  const char* ext;  // with dot, 4 characters
+  const char* contentType;
+};
+constexpr SdKind kLogFiles{storagefmt::kLogDir, ".log", "text/plain; charset=utf-8"};
+constexpr SdKind kDataFiles{storagefmt::kDataDir, ".csv", "text/csv; charset=utf-8"};
+
+struct FileEntry {
   uint64_t key;
   char name[24];
 };
 
-// Keeps the newest kMaxListedLogs log files (by boot number and part) older than `before`: one
+// A name like B000042-0001.log with the extension of `kind`. Also rules out paths like ../
+bool validFileName(const char* name, const SdKind& kind, uint32_t& boot, uint16_t& part) {
+  const size_t len = strlen(name);
+  return storagefmt::parseFileName(name, boot, part) && len < sizeof(FileEntry::name) && len >= 4 &&
+         strcmp(name + len - 4, kind.ext) == 0;
+}
+
+// Keeps the newest kMaxListedFiles files (by boot number and part) older than `before`: one
 // page of the list. The next page starts before the oldest file of this one.
-struct LogScan {
-  LogEntry items[kMaxListedLogs];
+struct FileScan {
+  FileEntry items[kMaxListedFiles];
   size_t count = 0;
   uint32_t total = 0;
   uint32_t older = 0;  // files older than `before`, this page included
   uint64_t before = UINT64_MAX;
+  const SdKind* kind = nullptr;
 };
 
-void onLogFile(const char* name, void* p) {
-  LogScan& s = *static_cast<LogScan*>(p);
+void onSdFile(const char* name, void* p) {
+  FileScan& s = *static_cast<FileScan*>(p);
   uint32_t boot;
   uint16_t part;
-  const size_t len = strlen(name);
-  if (!storagefmt::parseFileName(name, boot, part) || len >= sizeof(LogEntry::name) || len < 4 ||
-      strcmp(name + len - 4, ".log") != 0) {
-    return;
-  }
+  if (!validFileName(name, *s.kind, boot, part)) return;
   ++s.total;
   const uint64_t key = storagefmt::fileKey(boot, part);
   if (key >= s.before) return;
   ++s.older;
   size_t slot = s.count;
-  if (s.count == kMaxListedLogs) {  // full: replace the oldest kept entry if this one is newer
+  if (s.count == kMaxListedFiles) {  // full: replace the oldest kept entry if this one is newer
     slot = 0;
     for (size_t i = 1; i < s.count; ++i) {
       if (s.items[i].key < s.items[slot].key) slot = i;
@@ -327,14 +340,15 @@ void onLogFile(const char* name, void* p) {
   strcpy(s.items[slot].name, name);
 }
 
-void handleSdLogList() {
+void handleSdList(const SdKind& kind) {
   g.lastActivityMs = millis();
   sysinfo::watchdogFeed();
-  auto scan = sysinfo::makeTemp<LogScan>();
+  auto scan = sysinfo::makeTemp<FileScan>();
   if (!scan) {
     sendSmallError("out of memory");
     return;
   }
+  scan->kind = &kind;
   if (g.server->hasArg("before")) {
     uint32_t boot;
     uint16_t part;
@@ -350,11 +364,11 @@ void handleSdLogList() {
                                                           : "SD card not found or not readable");
     return;
   }
-  sd.fs().list(storagefmt::kLogDir, onLogFile, scan.get());
+  sd.fs().list(kind.dir, onSdFile, scan.get());
   // newest first
   for (size_t i = 1; i < scan->count; ++i) {
     for (size_t j = i; j > 0 && scan->items[j].key > scan->items[j - 1].key; --j) {
-      const LogEntry t = scan->items[j];
+      const FileEntry t = scan->items[j];
       scan->items[j] = scan->items[j - 1];
       scan->items[j - 1] = t;
     }
@@ -373,7 +387,7 @@ void handleSdLogList() {
   char path[storagefmt::kPathLen];
   for (size_t i = 0; i < scan->count; ++i) {
     sysinfo::watchdogFeed();
-    snprintf(path, sizeof(path), "%s/%s", storagefmt::kLogDir, scan->items[i].name);
+    snprintf(path, sizeof(path), "%s/%s", kind.dir, scan->items[i].name);
     JsonObject f = files.add<JsonObject>();
     f["name"] = scan->items[i].name;
     f["size"] = sd.fs().fileSize(path);
@@ -392,14 +406,14 @@ void handleSdLogList() {
 
 void pauseDns(bool pause);
 
-// Streams one log file. The download blocks the main loop, so the watchdog is fed per chunk.
-void handleSdLogFile() {
+// Streams one file. The download blocks the main loop, so the watchdog is fed per chunk.
+void handleSdFile(const SdKind& kind) {
   g.lastActivityMs = millis();
   const String& name = g.server->arg("name");
   uint32_t boot;
   uint16_t part;
-  if (!storagefmt::parseFileName(name.c_str(), boot, part) || !name.endsWith(".log") || name.length() >= 24) {
-    sendSmallError("invalid file name");  // also rules out paths like ../
+  if (!validFileName(name.c_str(), kind, boot, part)) {
+    sendSmallError("invalid file name");
     return;
   }
   auto chunk = sysinfo::makeTempBuffer(kDownloadChunk);
@@ -413,7 +427,7 @@ void handleSdLogFile() {
     return;
   }
   char path[storagefmt::kPathLen];
-  snprintf(path, sizeof(path), "%s/%s", storagefmt::kLogDir, name.c_str());
+  snprintf(path, sizeof(path), "%s/%s", kind.dir, name.c_str());
   const int64_t size = sd.fs().fileSize(path);
   FILE* f = size >= 0 ? sd.fs().openRead(path) : nullptr;
   if (f == nullptr) {
@@ -425,7 +439,7 @@ void handleSdLogFile() {
   g.server->sendHeader("Content-Disposition", String("attachment; filename=\"") + name + "\"");
   g.server->sendHeader("Cache-Control", "no-store");
   g.server->setContentLength(static_cast<size_t>(size));
-  g.server->send(200, "text/plain; charset=utf-8", "");
+  g.server->send(200, kind.contentType, "");
   int64_t sent = 0;
   while (sent < size) {
     const size_t n = fread(chunk.get(), 1, kDownloadChunk, f);
@@ -584,8 +598,10 @@ bool ServiceMode::begin(const Options& options) {
   g.server->on("/api/service-password", HTTP_POST, handlePostServicePassword);
   g.server->on("/api/reboot", HTTP_POST, handleReboot);
   g.server->on("/api/ota", HTTP_POST, handleOtaDone, handleOtaChunk);
-  g.server->on("/api/sdlogs", HTTP_GET, handleSdLogList);
-  g.server->on("/api/sdlogs/file", HTTP_GET, handleSdLogFile);
+  g.server->on("/api/sdlogs", HTTP_GET, [] { handleSdList(kLogFiles); });
+  g.server->on("/api/sdlogs/file", HTTP_GET, [] { handleSdFile(kLogFiles); });
+  g.server->on("/api/sddata", HTTP_GET, [] { handleSdList(kDataFiles); });
+  g.server->on("/api/sddata/file", HTTP_GET, [] { handleSdFile(kDataFiles); });
   g.server->onNotFound(handleNotFound);
   g.server->begin();
 

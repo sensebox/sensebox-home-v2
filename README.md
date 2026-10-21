@@ -134,6 +134,7 @@ Press BOOT only *after* the box has started. Held during power-on or reset, it p
 - **Logs** (expandable):
   - **Most recent logs:** the last lines logged before service mode, with a **Download** button.
   - **Log files on the SD card:** list the newest 40 and download them. The card is read only when you press **Show log files**, and the newest file is marked.
+- **Measurements** (expandable): the measurement files (CSV) on the SD card, listed and downloaded the same way (**Show measurement files**).
 - **Settings** (expandable):
   - station name, DevEUI, JoinEUI and AppKey (the AppKey can only be written, never read)
   - the service WiFi password (write-only)
@@ -166,8 +167,10 @@ The web page uses a small REST API, which tools can use too:
 | `POST /api/ota` | firmware update: the `.bin` file as `multipart/form-data`, e.g. `curl -F firmware=@firmware.bin http://192.168.4.1/api/ota` |
 | `GET /api/sdlogs[?before=B000042-0001.log]` | log files on the SD card, newest first, 40 per page (name, size, last write `mtime` in UTC or 0 if unknown), card size and free space; `more` says whether older files are left, the next page is `?before=<oldest name shown>` |
 | `GET /api/sdlogs/file?name=B000042-0001.log` | download one log file |
+| `GET /api/sddata[?before=B000042-0001.csv]` | measurement files (CSV) on the SD card, same answer as `/api/sdlogs` |
+| `GET /api/sddata/file?name=B000042-0001.csv` | download one measurement file |
 
-The SD card is not in use in service mode. Only during one of the `/api/sdlogs` requests is it mounted, and it is unmounted right after: it needs about 5–9 KB of RAM, which WiFi needs otherwise. With less than 16 KB free the request is refused (`not enough memory`).
+The SD card is not in use in service mode. Only during one of the `/api/sdlogs` or `/api/sddata` requests is it mounted, and it is unmounted right after: it needs about 5–9 KB of RAM, which WiFi needs otherwise. With less than 16 KB free the request is refused (`not enough memory`).
 
 All answers are JSON; errors come as `{"ok": false, "error": "…"}`.
 

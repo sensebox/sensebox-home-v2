@@ -27,8 +27,7 @@ pre{margin:0;font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre
 .sdlist th{position:sticky;top:0;background:var(--card);z-index:1}.sdlist td{vertical-align:middle}
 .sdlist tr.newest td{background:color-mix(in srgb,var(--ok) 12%,transparent)}
 .sdlist button{padding:4px 10px;font-size:13px}
-.when{display:inline-flex;align-items:baseline;gap:5px;padding:1px 7px;border:1px solid var(--line);border-radius:4px;background:var(--bg);white-space:nowrap;font-variant-numeric:tabular-nums;cursor:help}
-.when b{font-size:15px}.when i{font-style:normal;color:var(--mute);font-size:12px}
+.when{white-space:nowrap;font-variant-numeric:tabular-nums;cursor:help}
 .badge{display:inline-block;background:var(--ok);color:var(--card);font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:1px}
 @media(max-width:600px){main{padding:10px}.saved{padding:8px 8px 0}details.card>.saved,details.card>.part{margin:0 10px 12px}details.card>summary{padding:12px}section{padding:12px}table{font-size:13px}td,th{padding:4px}}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px 16px}.grid div span{color:var(--mute)}
@@ -76,6 +75,15 @@ its WiFi open during normal operation, so you can reach service mode without ope
 The newest file ends where service mode was started. The box reads the card only when you press the button.</p>
 <div class="row"><button id="sdList">Show log files</button></div>
 <div class="msg" id="sdMsg"></div><div class="sdlist" id="sdBox" hidden><table id="sdFiles"></table></div><div class="row" style="margin-top:8px"><button class="sec" id="sdMore" hidden>Load older files</button></div></div>
+</details>
+
+<details class="card"><summary>Measurements</summary>
+<div class="part"><h3>Measurement files on the SD card</h3>
+<p class="note">Every measured value (raw, corrected and 10-min means) as CSV, one file per boot (<code>B000042</code> = boot 42), a new part every 4 MB.
+Columns: <code>utc,uptime_s,slot,phenomenon,kind,value,unit,quality</code>. Values from before the first time sync of a boot have no <code>utc</code>, only <code>uptime_s</code>;
+the line <code># time synced: …</code> in the file converts them. The box reads the card only when you press the button.</p>
+<div class="row"><button id="sdDataList">Show measurement files</button></div>
+<div class="msg" id="sdDataMsg"></div><div class="sdlist" id="sdDataBox" hidden><table id="sdDataFiles"></table></div><div class="row" style="margin-top:8px"><button class="sec" id="sdDataMore" hidden>Load older files</button></div></div>
 </details>
 
 <details class="card"><summary>Settings</summary>
@@ -136,29 +144,32 @@ function fmtLog(lines){return lines.map(l=>'['+String(l.uptimeS).padStart(7)+'] 
 let logBefore=[];
 async function loadLog(){const r=await api('/api/log');logBefore=r.before||[];$('logBefore').textContent=fmtLog(logBefore);}
 function saveText(name,text){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'text/plain'}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);}
-// Short local time of a log file (last write): day of month and hour, the full time in the tooltip.
+// Local time of a file's last write, down to the hour (e.g. "20.10.2026, 19 Uhr"), minutes in the tooltip.
 // Empty if the box had no time in that boot (no time sync).
 function whenEl(t){const el=document.createElement('span');if(!t)return el;const d=new Date(t*1000);el.className='when';
- const b=document.createElement('b');b.textContent=d.getDate()+'.';const h=document.createElement('i');h.textContent=String(d.getHours()).padStart(2,'0')+' h';
- el.append(b,h);el.title='Last written '+d.toLocaleString([],{weekday:'short',day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});return el;}
+ el.textContent=d.toLocaleString([],{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit'});el.title='Last written '+d.toLocaleString([],{weekday:'short',day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});return el;}
 function kb(n){return n<1024?n+' B':(n/1024).toFixed(n<10240?1:0)+' KB';}
 function download(url,name){const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();}
+// File list of one SD directory (o.api: /api/sdlogs or /api/sddata, o.id: element id prefix).
 // Pages of 40 files, newest first; "Load older files" asks for the files before the last one shown.
-let sdShown=0;
-async function listSdLogs(){const msg=$('sdMsg'),t=$('sdFiles'),more=$('sdMore'),before=sdShown?t.rows[sdShown].cells[0].firstChild.textContent:'';
- if(!before){t.innerHTML='';$('sdBox').hidden=true;}
+function sdFileList(o){let shown=0;const msg=$(o.id+'Msg'),t=$(o.id+'Files'),more=$(o.id+'More'),box=$(o.id+'Box');
+ async function list(){const before=shown?t.rows[shown].cells[0].firstChild.textContent:'';
+ if(!before){t.innerHTML='';box.hidden=true;}
  msg.textContent='Reading the SD card…';more.hidden=true;
- let r;try{r=await api('/api/sdlogs'+(before?'?before='+encodeURIComponent(before):''));}catch(e){msg.textContent='No answer from the box.';more.hidden=!before;return;}
+ let r;try{r=await api(o.api+(before?'?before='+encodeURIComponent(before):''));}catch(e){msg.textContent='No answer from the box.';more.hidden=!before;return;}
  if(!r.ok){msg.textContent='Could not read the card: '+r.error;more.hidden=!before;return;}
- if(!before){table(t,['File','When','Size',''],[]);sdShown=0;}
+ if(!before){table(t,['File','When','Size',''],[]);shown=0;}
  r.files.forEach(f=>{const row=t.insertRow();for(let c=0;c<4;++c)row.insertCell();
   row.cells[0].textContent=f.name;row.cells[1].appendChild(whenEl(f.mtime));row.cells[2].textContent=kb(f.size);
-  if(sdShown===0){row.className='newest';const b=document.createElement('span');b.className='badge';b.textContent='NEWEST';row.cells[0].appendChild(b);
-   row.title='Most recent log file: it ends where service mode was started';}
+  if(shown===0){row.className='newest';const b=document.createElement('span');b.className='badge';b.textContent='NEWEST';row.cells[0].appendChild(b);
+   row.title=o.newest;}
   const btn=document.createElement('button');btn.textContent='Download';
-  btn.onclick=()=>download('/api/sdlogs/file?name='+encodeURIComponent(f.name),f.name);row.cells[3].appendChild(btn);++sdShown;});
- msg.textContent=(r.more||sdShown<r.total?sdShown+' of '+r.total+' files shown':r.total+' file(s)')+(r.cardMB?' · card '+r.cardMB+' MB, '+r.freeMB+' MB free':'');
- more.hidden=!r.more;$('sdBox').hidden=sdShown===0;}
+  btn.onclick=()=>download(o.api+'/file?name='+encodeURIComponent(f.name),f.name);row.cells[3].appendChild(btn);++shown;});
+ msg.textContent=(r.more||shown<r.total?shown+' of '+r.total+' files shown':r.total+' file(s)')+(r.cardMB?' · card '+r.cardMB+' MB, '+r.freeMB+' MB free':'');
+ more.hidden=!r.more;box.hidden=shown===0;}
+ $(o.button).onclick=()=>{shown=0;list();};more.onclick=list;}
+sdFileList({api:'/api/sdlogs',id:'sd',button:'sdList',newest:'Most recent log file: it ends where service mode was started'});
+sdFileList({api:'/api/sddata',id:'sdData',button:'sdDataList',newest:'Most recent measurement file: it ends where service mode was started'});
 document.querySelectorAll('button[data-field]').forEach(b=>b.onclick=async()=>{const input=b.parentElement.querySelector('input');
  const res=await api('/api/config/field',{field:b.dataset.field,value:input.value.trim()});show($('settingsMsg'),res,'Saved. Restart to apply.');if(res.ok)loadConfig();});
 $('saveAppKey').onclick=async()=>{const res=await api('/api/appkey',{appKey:$('appKey').value.trim()});show($('settingsMsg'),res,'AppKey saved. Restart to apply.');if(res.ok){$('appKey').value='';loadConfig();}};
@@ -187,6 +198,5 @@ $('fwUpload').onclick=()=>{const f=$('fwFile').files[0],msg=$('fwMsg'),bar=$('fw
 let uploading=false;  // the box serves one connection at a time: no polling during an upload
 $('dlBefore').onclick=()=>{const name=($('title').textContent||'sensebox').replace(/[^\w.-]+/g,'_');
  saveText(name+'-log-before-service-mode.txt','# '+$('title').textContent+', log saved before service mode ('+$('savedWhen').textContent+')\n'+fmtLog(logBefore)+'\n');};
-$('sdList').onclick=()=>{sdShown=0;listSdLogs();};$('sdMore').onclick=listSdLogs;
 loadStatus();loadConfig();loadLog();setInterval(()=>{if(uploading)return;api('/api/status').then(st=>{serviceInfo(st.service);savedWhen(st);}).catch(()=>{});},30000);
 </script></body></html>
