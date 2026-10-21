@@ -121,7 +121,7 @@ jobs:
           mkdir -p _site/formatters
           cp site/* _site/
           cp tools/ttn-uplink-formatter*.js _site/formatters/
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
       - id: deploy
