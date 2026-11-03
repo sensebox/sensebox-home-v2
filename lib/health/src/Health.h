@@ -45,7 +45,8 @@ class HealthRegistry {
   void reportSuccess(Id id, uint32_t utc = 0);
 
   bool get(Id id, ComponentHealth& out) const;
-  size_t count() const { return count_; }
+  // Locked like everything else: other tasks (e.g. the LED) may read while components are added.
+  size_t count() const;
   // Worst status over all components (Disabled and Unknown are ignored).
   ComponentStatus overall() const;
 
