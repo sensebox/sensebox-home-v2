@@ -70,7 +70,7 @@ Open the serial monitor at 115200 baud (`pio device monitor`). Commands are one 
 | Command | What it does |
 |---|---|
 | `help` | List the commands. |
-| `status` | Firmware version, normal/safe/service mode, uptime, reset reason, time sync, memory, the health of every component, every sensor (state, readings, errors, retry countdown) and LoRaWAN (joined, AppKey set/missing, uplinks, downlinks, spreading factor, RSSI/SNR, remaining airtime budget). |
+| `status` | Firmware version, normal/safe/service mode, uptime, reset reason, time sync, memory, the health of every component, every sensor (state, readings, errors, retry countdown, and its most recent values with their age) and LoRaWAN (joined, AppKey set/missing, uplinks, downlinks, spreading factor, RSSI/SNR, remaining airtime budget). |
 | `config` | Print the **stored** config as JSON. Secrets (the AppKey) are never included. If it differs from the running config, a note says a reboot is pending. |
 | `config-set <json>` | Replace the whole config with a JSON document on one line (see [Configuration](#configuration)). It is validated first; if anything is wrong you get `error: ...` and nothing is stored. |
 | `config-set name <name>` | Set the station name (max. 31 characters, spaces allowed). |

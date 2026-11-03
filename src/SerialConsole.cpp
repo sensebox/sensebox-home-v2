@@ -142,6 +142,22 @@ void SerialConsole::run(char* line, uint32_t nowMs) {
   }
 }
 
+void SerialConsole::printLatestValues(uint8_t slot) {
+  for (size_t i = 0; i < app_.latest.count(); ++i) {
+    const Measurement& m = app_.latest.at(i);
+    if (m.sensorSlot != slot) continue;
+    Serial.printf("    %-20s %.2f %s", phenomenonName(m.phenomenon), static_cast<double>(m.value), unitSymbol(m.unit));
+    // Timestamps are uptime seconds until the clock is synced, UTC afterwards.
+    const bool unsynced = (m.quality & quality::kTimeUnsynced) != 0;
+    const uint32_t now = unsynced ? app_.clock.uptimeS() : app_.clock.nowUtc();
+    if (unsynced || app_.clock.isSynced()) {
+      Serial.printf(", %lu s ago", static_cast<unsigned long>(now >= m.timestamp ? now - m.timestamp : 0));
+    }
+    if (m.quality & ~quality::kTimeUnsynced) Serial.printf(", quality flags 0x%x", m.quality);
+    Serial.println();
+  }
+}
+
 void SerialConsole::printStatus(uint32_t nowMs) {
   const char* mode = app_.serviceMode ? "SERVICE MODE" : (app_.safeMode ? "SAFE MODE" : "normal");
   Serial.printf("firmware %s (%s), uptime %lu s, reset: %s%s%s\n", SBH_FW_VERSION, mode,
@@ -194,6 +210,7 @@ void SerialConsole::printStatus(uint32_t nowMs) {
                   sensorErrorName(s.lastError));
     if (s.retryInMs > 0) Serial.printf(", retry in %lu s", static_cast<unsigned long>(s.retryInMs / 1000));
     Serial.println();
+    printLatestValues(s.slot);
   }
 
   const LmicTransport::Status ls = app_.lora.status(nowMs);

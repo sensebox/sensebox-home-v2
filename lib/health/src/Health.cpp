@@ -67,6 +67,11 @@ void HealthRegistry::reportSuccess(Id id, uint32_t utc) {
   if (utc != 0) c.lastSuccessUtc = utc;
 }
 
+size_t HealthRegistry::count() const {
+  MutexLock lock(mutex_, kLockTimeoutMs);
+  return lock.locked() ? count_ : 0;
+}
+
 bool HealthRegistry::get(Id id, ComponentHealth& out) const {
   MutexLock lock(mutex_, kLockTimeoutMs);
   if (!lock.locked() || !valid(id)) return false;

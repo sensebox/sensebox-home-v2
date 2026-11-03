@@ -26,6 +26,7 @@ class SerialConsole {
  private:
   void run(char* line, uint32_t nowMs);
   void printStatus(uint32_t nowMs);
+  void printLatestValues(uint8_t slot);
   void printConfig();
   void configSet(char* arg);
   void printLog(uint32_t nowMs);
