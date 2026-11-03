@@ -97,7 +97,7 @@ updater::RunningInfo g_running{};
 StatusLed g_led;
 ButtonDetector g_button;
 BootGuard g_bootGuard;
-App g_app{g_clock, g_health, g_config, g_sensors, g_lora, g_sd, g_selfTest, false, false};
+App g_app{g_clock, g_health, g_config, g_sensors, g_latest, g_lora, g_sd, g_selfTest, false, false};
 void enterServiceMode(uint32_t nowMs);
 SerialConsole g_console(g_app, enterServiceMode);
 ServiceMode g_service;
@@ -294,6 +294,7 @@ void setup() {
   logger::setLevel(LogLevel::Debug);
 #endif
   g_led.begin();
+  if (!g_led.start(g_health)) LOGE(kTag, "could not start LED task");
 
   LOGI(kTag, "senseBox:home v2 firmware %s, reset reason: %s", SBH_FW_VERSION, sysinfo::resetReason());
   g_running = updater::bootInfo();
@@ -372,7 +373,6 @@ void loop() {
     g_service.loop(nowMs);
     if (Serial.available() > 0) g_service.markActivity();
     g_console.poll(nowMs);
-    g_led.tick(nowMs, g_health);
     waitForNextPass(nowMs, kServiceLoopPeriodMs);
     return;
   }
@@ -391,7 +391,6 @@ void loop() {
   runSelfTest(nowMs);
   handleButton(nowMs);
   g_console.poll(nowMs);
-  g_led.tick(nowMs, g_health);
   periodicStatusLog(nowMs);
 
   waitForNextPass(nowMs, wantsFastLoop() ? kFastLoopPeriodMs : kLoopPeriodMs);

@@ -2,6 +2,7 @@
 
 #include "Clock.h"
 #include "Health.h"
+#include "LatestValues.h"
 #include "LmicTransport.h"
 #include "SdStore.h"
 #include "SelfTest.h"
@@ -14,6 +15,7 @@ struct App {
   HealthRegistry& health;
   config::StationConfig& config;
   SensorManager& sensors;
+  const LatestValues& latest;  // most recent value per sensor and phenomenon
   LmicTransport& lora;
   SdStore& storage;
   const SelfTest& selfTest;
