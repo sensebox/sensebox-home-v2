@@ -294,7 +294,6 @@ void setup() {
   logger::setLevel(LogLevel::Debug);
 #endif
   g_led.begin();
-  if (!g_led.start(g_health)) LOGE(kTag, "could not start LED task");
 
   LOGI(kTag, "senseBox:home v2 firmware %s, reset reason: %s", SBH_FW_VERSION, sysinfo::resetReason());
   g_running = updater::bootInfo();
@@ -357,6 +356,7 @@ void setup() {
     startUplinks();
     g_led.setMode(StatusLed::Mode::Health);
   }
+  if (!g_led.start(g_health)) LOGE(kTag, "could not start LED task");
 
   g_console.begin();
   sysinfo::watchdogAddCurrentTask();
