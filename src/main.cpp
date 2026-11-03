@@ -294,7 +294,7 @@ void setup() {
   logger::setLevel(LogLevel::Debug);
 #endif
   g_led.begin();
-  if (!g_led.start(g_health)) LOGE(kTag, "could not start LED task");
+  if (!g_led.start(g_health)) LOGE(kTag, "could not start LED task, the main loop updates the LED");
 
   LOGI(kTag, "senseBox:home v2 firmware %s, reset reason: %s", SBH_FW_VERSION, sysinfo::resetReason());
   g_running = updater::bootInfo();
@@ -373,6 +373,7 @@ void loop() {
     g_service.loop(nowMs);
     if (Serial.available() > 0) g_service.markActivity();
     g_console.poll(nowMs);
+    g_led.poll(nowMs);
     waitForNextPass(nowMs, kServiceLoopPeriodMs);
     return;
   }
@@ -391,6 +392,7 @@ void loop() {
   runSelfTest(nowMs);
   handleButton(nowMs);
   g_console.poll(nowMs);
+  g_led.poll(nowMs);
   periodicStatusLog(nowMs);
 
   waitForNextPass(nowMs, wantsFastLoop() ? kFastLoopPeriodMs : kLoopPeriodMs);

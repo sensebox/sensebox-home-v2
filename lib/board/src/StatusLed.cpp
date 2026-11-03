@@ -16,7 +16,17 @@ void StatusLed::begin() { show(LedColor::Green); }
 
 bool StatusLed::start(const HealthRegistry& health) {
   health_ = &health;
-  return xTaskCreate(taskMain, "led", kTaskStack, this, kTaskPriority, nullptr) == pdPASS;
+  taskRunning_ = xTaskCreate(taskMain, "led", kTaskStack, this, kTaskPriority, nullptr) == pdPASS;
+  return taskRunning_;
+}
+
+void StatusLed::setMode(Mode mode) {
+  mode_ = mode;
+  if (!taskRunning_) tick(millis());  // no task: show the new mode right away
+}
+
+void StatusLed::poll(uint32_t nowMs) {
+  if (!taskRunning_) tick(nowMs);
 }
 
 void StatusLed::taskMain(void* self) {
@@ -51,6 +61,12 @@ void StatusLed::tick(uint32_t nowMs) {
     case Mode::Booting: show(LedColor::Green); break;
     case Mode::ServiceMode: show(LedColor::Blue); break;
     case Mode::SafeMode: show(LedColor::Red); break;
-    case Mode::Health: show(ledpattern::colorAt(ledpattern::fromHealth(*health_), nowMs)); break;
+    case Mode::Health:
+      if (health_ == nullptr) {
+        show(LedColor::Green);
+      } else {
+        show(ledpattern::colorAt(ledpattern::fromHealth(*health_), nowMs));
+      }
+      break;
   }
 }
